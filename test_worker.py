@@ -5,11 +5,15 @@ Cloudflare 없이도 인증·MCP·sender 강제·rate limit 경로를 검증한�
 D1 은 SQL 패턴을 흉내내는 메모리 구현으로 대체한다.
 """
 import json
+import os
 import sys
 
 from py_mini_racer import MiniRacer
 
-WORKER = open("/workspace/work/ai_team_room_public/_worker.js", encoding="utf-8").read()
+HERE = os.path.dirname(os.path.abspath(__file__))
+WORKER_PATH = os.environ.get("WORKER_PATH") or os.path.join(HERE, "_worker.js")
+
+WORKER = open(WORKER_PATH, encoding="utf-8").read()
 WORKER = WORKER.replace("export default {", "var __handler = {")
 
 PRELUDE = r"""
@@ -163,10 +167,10 @@ TESTS = r"""
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms'), env);
   ok('no auth 401', r.status === 401, r.status);
 
-  // 3. 용 키 → legacy
+  // 3. 공용 API_KEY → api
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/me', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
   var me = JSON.parse(r.body);
-  ok('legacy /api/me', r.status === 200 && me.kind === 'legacy' && me.agent === null, r.body);
+  ok('api_key /api/me', r.status === 200 && me.kind === 'api' && me.agent === null, r.body);
 
   // 4. 토큰 발급(공용 키)
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/tokens', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{agents:['연금술사','외문집사']}}), env);
@@ -184,10 +188,33 @@ TESTS = r"""
   var posted = JSON.parse(r.body);
   ok('sender enforced', r.status === 201 && posted.message.sender === '외문집사', r.body.slice(0,160));
 
-  // 7. 공용 키는 body sender 그대로
-  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{sender:'핑크', content:'옛 이름'}}), env);
+  // 7. 공용 API_KEY 로 임의 sender 발송 → 403 token_required
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{sender:'핑크', content:'임의 발송 시도'}}), env);
+  var blocked = JSON.parse(r.body);
+  ok('api_key POST 403', r.status === 403 && blocked.error === 'token_required', r.status + ' ' + r.body.slice(0,160));
+
+  // 7b. 웹 입장 키(X-Room-Key)로 발송 → 201, 화면에서 고른 sender 그대로
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {method:'POST', headers:{'x-room-key':'room-pass'}, body:{sender:'지존', content:'웹에서 보낸 인사'}}), env);
   posted = JSON.parse(r.body);
-  ok('legacy sender passthrough', posted.message.sender === '핑크', r.body.slice(0,160));
+  ok('room_key web POST', r.status === 201 && posted.message.sender === '지존', r.status + ' ' + r.body.slice(0,160));
+
+  // 7c. 공용 API_KEY 조회(GET)는 그대로 동작
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
+  ok('api_key GET rooms', r.status === 200 && JSON.parse(r.body).ok === true, r.status);
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages?limit=5', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
+  ok('api_key GET messages', r.status === 200 && JSON.parse(r.body).ok === true, r.status);
+
+  // 7d. 공용 API_KEY 로는 토큰 관리(발급) 가능, 웹 입장 키로는 불가
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/tokens', {headers:{'x-room-key':'room-pass'}}), env);
+  ok('room_key admin 403', r.status === 403, r.status);
+
+  // 7e. /api/docs 에 실제 API_KEY 미노출
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/docs?format=json', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
+  ok('docs json no key', r.body.indexOf('legacy-shared-key') === -1 && r.body.indexOf('<발급받은_개인_토큰>') !== -1, r.body.slice(0,140));
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/docs', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
+  ok('docs text no key', r.body.indexOf('legacy-shared-key') === -1 && r.body.indexOf('<발급받은_개인_토큰>') !== -1, r.body.slice(0,140));
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/docs?key=legacy-shared-key', {}), env);
+  ok('docs via ?key no key', r.body.indexOf('legacy-shared-key') === -1, r.body.slice(0,140));
 
   // 8. /api/agents 활동
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/agents', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
@@ -247,6 +274,14 @@ TESTS = r"""
     last = r.status;
   }
   ok('mcp rate limited', last === 429, last);
+
+  // 19. API_KEY 와 ROOM_KEY 가 같은 값으로 설정된 경우에도 화면 로그인은 발송 가능
+  var env2 = makeEnv();
+  env2.API_KEY = 'same-key'; env2.ROOM_KEY = 'same-key';
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {method:'POST', headers:{'x-room-key':'same-key'}, body:{sender:'지존', content:'같은 키 웹 발송'}}), env2);
+  ok('same key web POST 201', r.status === 201, r.status);
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer same-key'}, body:{sender:'지존', content:'같은 키 스크립트 발송'}}), env2);
+  ok('same key bearer POST 403', r.status === 403, r.status);
 
   globalThis.__out = out;
 })().catch(function(e){ globalThis.__out = [{name:'EXCEPTION', ok:false, extra:String((e && e.stack) || e)}]; });

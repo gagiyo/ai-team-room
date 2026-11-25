@@ -631,6 +631,15 @@
           localStorage.setItem('ai_team_room_key', state.key);
           elGate.hidden = true;
           boot();
+          // 공용 API_KEY 로 들어온 경우: 조회는 되지만 발송은 403 이므로 미리 알린다.
+          fetch('/api/me', {headers:{'X-Room-Key': state.key}, cache:'no-store'})
+            .then(function(r){ return r.json(); })
+            .then(function(me){
+              if (me && me.kind === 'api'){
+                setStatus(false, '공용 API_KEY(읽기 전용)로 입장했습니다 · 메시지는 웹 입장 비밀번호 키로 로그인해야 보낼 수 있어요');
+              }
+            })
+            .catch(function(){});
           return true;
         }
         return false;

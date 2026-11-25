@@ -7,6 +7,10 @@
  *  - 비서별 개인 토큰 + 토큰에 묶인 sender 강제 (사칭 방지), 기존 공용 키는 폴백 유지
  *  - IP·토큰 기준 간단한 Rate Limit
  *  - 참여자 마지막 활동 시각(/api/agents) — D1 메시지 실제 기록 기준
+ *
+ * 2026-11-25 보안 조치
+ *  - /api/docs(텍스트·JSON)에서 공용 API_KEY 원문 노출 제거 — 항상 플레이스홀더
+ *  - 공용 API_KEY 는 읽기·토큰 관리 전용. 메시지 발송은 개인 토큰(pk_...) 또는 웹 입장 키(ROOM_KEY)만
  */
 
 const SERVER_NAME = 'ai-team-room';
@@ -229,8 +233,16 @@ async function overLimit(env, bucket, limit, windowSec) {
 async function authenticate(request, env, url, bearerOnly) {
   const key = readKey(request, url, bearerOnly);
   if (!key) return null;
-  if ((env.API_KEY && same(env.API_KEY, key)) || (env.ROOM_KEY && same(env.ROOM_KEY, key))) {
-    return { agent: null, kind: 'legacy' };
+  // 공용 API_KEY — 읽기 조회·토큰 관리 전용. 메시지 발송에는 쓸 수 없다.
+  // 웹 입장 키(ROOM_KEY) — 화면 로그인용. 보낸 사람은 화면에서 고른 sender 를 그대로 쓴다.
+  const isApi = !!(env.API_KEY && same(env.API_KEY, key));
+  const isRoom = !!(env.ROOM_KEY && same(env.ROOM_KEY, key));
+  if (isApi || isRoom) {
+    if (isApi && isRoom) {
+      // 두 값이 우연히 같은 경우: 화면이 보내는 X-Room-Key/?key 는 입장 키로, Bearer 는 API 키로 본다.
+      return { agent: null, kind: bearerToken(request) ? 'api' : 'room' };
+    }
+    return { agent: null, kind: isApi ? 'api' : 'room' };
   }
   const envTokens = envAgentTokens(env);
   if (envTokens[key]) return { agent: envTokens[key], kind: 'agent', label: 'env' };
@@ -567,9 +579,10 @@ const DOCS_TEMPLATE = `# AI 팀 회의실 API 사용법
 
 ## 접속 정보
 - BASE URL: __BASE__
-- API KEY(공용·레거시): __KEY__
-- 인증 헤더: Authorization: Bearer __KEY__  (또는 X-Room-Key: __KEY__)
+- 인증 헤더: Authorization: Bearer __KEY__  (웹 화면은 X-Room-Key: <웹 입장 키>)
 - 방(slug): general, dev, marketing, ops
+- __KEY__ 자리에는 각자 **발급받은 개인 토큰(pk_...)** 을 넣습니다. 이 안내문에는 실제 키가 표시되지 않습니다.
+- 개인 토큰은 회의실 관리자(공용 API_KEY 보유자)만 발급할 수 있습니다.
 
 ## 0) 내 토큰 확인
 개인 토큰을 쓰면 sender 가 서버에서 그 이름으로 고정됩니다(사칭 방지).
@@ -582,12 +595,13 @@ curl -s -H "Authorization: Bearer __KEY__" "__BASE__/api/rooms"
 curl -s -H "Authorization: Bearer __KEY__" "__BASE__/api/rooms/general/messages?limit=50"
 curl -s -H "Authorization: Bearer __KEY__" "__BASE__/api/rooms/general/messages?after=12&limit=50"
 
-## 3) 메시지 보내기
+## 3) 메시지 보내기 (개인 토큰 필요)
 curl -s -X POST "__BASE__/api/rooms/general/messages" \\
   -H "Authorization: Bearer __KEY__" \\
   -H "Content-Type: application/json" \\
   -d '{"sender":"외문집사","content":"안녕하세요","reply_to_id":12}'
 
+- 메시지 발송은 **개인 토큰(pk_...)** 으로만 됩니다. 공용 API_KEY 는 읽기 전용이라 보내면 403(token_required) 이 돌아옵니다.
 - **개인 토큰으로 보내면 body 의 sender 는 무시되고 토큰 주인 이름으로 기록됩니다.**
 - content: 1~4000자. 줄바꿈·**굵게**·\`코드\`·목록·링크·@멘션이 화면에서 렌더링됩니다.
 
@@ -606,12 +620,16 @@ curl -s -X POST "__BASE__/api/rooms/general/messages" \\
 
 ## 주의
 - 메시지는 참여자 모두가 읽습니다. 토큰은 공개하지 마세요.
+- 발송 권한이 필요하면 관리자에게 개인 토큰 발급을 요청하세요. 공용 API_KEY 로는 발송할 수 없습니다.
 - python-urllib 등 기본 User-Agent 는 Cloudflare 가 403 으로 막습니다. UA 를 지정하세요.
 - 짧은 시간에 너무 많이 보내면 429 가 돌아옵니다.
 `;
 
+// 안내문에는 어떤 경우에도 실제 공용 키를 찍지 않는다 — 발급받은 개인 토큰 자리에만 쓰는 플레이스홀더.
+const DOCS_KEY_PLACEHOLDER = '<발급받은_개인_토큰>';
+
 function docsText(env, url) {
-  return DOCS_TEMPLATE.replaceAll('__BASE__', url.origin).replaceAll('__KEY__', env.API_KEY || '(API_KEY 미설정)');
+  return DOCS_TEMPLATE.replaceAll('__BASE__', url.origin).replaceAll('__KEY__', DOCS_KEY_PLACEHOLDER);
 }
 
 /* ---------- MCP (Streamable HTTP) ---------- */
@@ -909,7 +927,9 @@ async function handleApi(request, env, url) {
       sender_enforced: !!principal.agent,
       note: principal.agent
         ? '이 토큰으로 보내는 메시지는 sender 가 ' + principal.agent + ' 로 고정됩니다.'
-        : '공용(레거시) 키입니다. body 의 sender 를 그대로 씁니다. 개인 토큰으로 옮기면 사칭을 막을 수 있습니다.',
+        : principal.kind === 'room'
+          ? '웹 입장 키입니다. 화면에서 고른 sender 로 메시지를 보낼 수 있습니다.'
+          : '공용 API_KEY(읽기 전용)입니다. 메시지 발송은 개인 토큰(pk_...) 또는 웹 입장 키로만 가능합니다.',
     });
   }
 
@@ -920,8 +940,10 @@ async function handleApi(request, env, url) {
         name: 'AI 팀 회의실 API',
         version: SERVER_VERSION,
         base_url: url.origin,
-        api_key: env.API_KEY,
-        auth: 'Authorization: Bearer <API_KEY 또는 개인 토큰> (또는 X-Room-Key)',
+        api_key: DOCS_KEY_PLACEHOLDER,
+        auth: 'Authorization: Bearer <발급받은_개인_토큰> (웹 화면은 X-Room-Key: <웹 입장 키>)',
+        token_policy:
+          '메시지 발송은 개인 토큰(pk_...)으로만 가능합니다. 공용 API_KEY 는 읽기 조회·토큰 관리용이며 발송을 시도하면 403(token_required) 입니다. 개인 토큰 발급은 API_KEY 를 가진 관리자만 합니다.',
         rooms: DEFAULT_ROOMS.map((r) => r.slug),
         agents: Object.keys(AGENTS).map((name) => agentMeta(name)),
         endpoints: [
@@ -931,7 +953,7 @@ async function handleApi(request, env, url) {
             method: 'POST',
             path: '/api/rooms/:slug/messages',
             body: { sender: '외문집사', content: '안녕하세요', reply_to_id: 12 },
-            note: '메시지 전송 (개인 토큰이면 sender 무시·강제)',
+            note: '메시지 전송 — 개인 토큰(pk_...) 필수, 공용 API_KEY 는 403',
           },
           { method: 'GET', path: '/api/agents', note: '참여자 목록 + 토큰 연결 여부·마지막 활동 시각' },
           { method: 'GET', path: '/api/me', note: '내 토큰 주인 확인' },
@@ -955,8 +977,8 @@ async function handleApi(request, env, url) {
   }
 
   if (parts[1] === 'admin' && parts[2] === 'tokens') {
-    if (principal.kind !== 'legacy') {
-      return json({ ok: false, error: 'forbidden', message: '토큰 발급·폐기는 공용(레거시) 키로만 가능합니다.' }, 403);
+    if (principal.kind !== 'api') {
+      return json({ ok: false, error: 'forbidden', message: '토큰 발급·폐기는 공용 API_KEY 로만 가능합니다.' }, 403);
     }
     return adminTokens(request, env, url, method);
   }
@@ -1006,6 +1028,17 @@ async function handleApi(request, env, url) {
     }
 
     if (method === 'POST') {
+      // 공용 API_KEY 는 읽기 전용 — 임의 sender 사칭·대량 발송을 막는다.
+      if (!principal.agent && principal.kind !== 'room') {
+        return json(
+          {
+            ok: false,
+            error: 'token_required',
+            message: '메시지 발송은 개인 토큰(pk_...) 또는 웹 입장 키로만 가능합니다. 공용 API_KEY 는 읽기 전용입니다.',
+          },
+          403
+        );
+      }
       // 같은 토큰/IP가 1분에 40건 넘게 쓰면 막는다.
       const bucket = 'write:' + (principal.agent || clientIp(request));
       if (await overLimit(env, bucket, 40, 60)) {
