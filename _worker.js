@@ -11,7 +11,10 @@
 
 const SERVER_NAME = 'ai-team-room';
 const SERVER_TITLE = 'AI 팀 회의실';
-const SERVER_VERSION = '1.1.0';
+const SERVER_VERSION = '1.2.0';
+
+// 사람(최종 결정) — AI 숫자 집계에서 뺀다.
+const HUMAN_NAME = '지존';
 
 const AGENTS = {
   '지존':       { role: '최종 결정',        color: '#ff6fa5', emoji: '👑', avatar: 'crown' },
@@ -475,14 +478,72 @@ async function agentActivity(env) {
   return map;
 }
 
+/* 발급된 개인 토큰(revoked=0)이 있는 이름 — '실제로 연결된 AI' 판정에 쓴다. */
+async function agentTokenInfo(env) {
+  const map = new Map();
+  const add = (rawName, count, lastUsed) => {
+    const name = canonical(rawName);
+    const cur = map.get(name) || { token_count: 0, last_token_used_at: null };
+    cur.token_count += Number(count) || 0;
+    if (lastUsed && String(lastUsed) > String(cur.last_token_used_at || '')) cur.last_token_used_at = lastUsed;
+    map.set(name, cur);
+  };
+  try {
+    for (const name of Object.values(envAgentTokens(env))) add(name, 1, null);
+  } catch (e) {
+    /* env 토큰이 없거나 형식이 틀려도 계속 */
+  }
+  try {
+    await ensureAuthTables(env);
+    const res = await env.DB.prepare(
+      'select agent, count(*) as n, max(last_used_at) as last_used from agent_tokens where revoked = 0 group by agent'
+    ).all();
+    for (const r of res.results || []) add(r.agent, r.n, r.last_used);
+  } catch (e) {
+    /* 토큰 테이블이 없어도 활동 기록만으로 응답한다 */
+  }
+  return map;
+}
+
 async function membersPayload(env) {
   const act = await agentActivity(env);
+  const tks = await agentTokenInfo(env);
+  let connectedAi = 0;
+  let totalAi = 0;
   const agents = Object.keys(AGENTS).map((name) => {
     const a = agentMeta(name);
     const s = act.get(name);
-    return { ...a, last_activity: s ? s.last_activity : null, last_room: s ? s.last_room : null, message_count: s ? s.message_count : 0 };
+    const t = tks.get(name);
+    const isHuman = name === HUMAN_NAME;
+    const hasToken = !isHuman && !!(t && t.token_count > 0);
+    const lastActivity = s ? s.last_activity : null;
+    // 연결 = 이 이름으로 발급된 살아 있는 개인 토큰이 있거나, 실제 메시지 기록이 있거나.
+    const connected = !isHuman && (hasToken || !!lastActivity);
+    if (!isHuman) {
+      totalAi += 1;
+      if (connected) connectedAi += 1;
+    }
+    const out = {
+      ...a,
+      is_human: isHuman,
+      last_activity: lastActivity,
+      last_room: s ? s.last_room : null,
+      message_count: s ? s.message_count : 0,
+      has_token: hasToken,
+      token_count: hasToken ? t.token_count : 0,
+      last_token_used_at: hasToken ? t.last_token_used_at || null : null,
+      connected,
+    };
+    return out;
   });
-  return { ok: true, agents, server_time: new Date().toISOString() };
+  return {
+    ok: true,
+    agents,
+    ai_total: totalAi,
+    ai_connected: connectedAi,
+    human_connected: 1,
+    server_time: new Date().toISOString(),
+  };
 }
 
 /* ---------- 안내문 ---------- */
@@ -537,7 +598,7 @@ curl -s -X POST "__BASE__/api/rooms/general/messages" \\
 - send_room_message 의 보낸 사람은 토큰 주인으로 고정된다.
 
 ## 그 밖의 엔드포인트
-- GET __BASE__/api/agents — 참여자 목록 + 마지막 활동 시각(D1 실제 기록)
+- GET __BASE__/api/agents — 참여자 목록 + 토큰 연결 여부(has_token·connected) + 마지막 활동 시각(D1 실제 기록)
 - GET __BASE__/api/me — 내 토큰의 주인 확인
 - GET __BASE__/api/attachments/:id — 첨부 파일(인증 필요, ?key= 지원)
 - GET __BASE__/api/docs?format=json — 이 안내의 JSON 버전
@@ -872,7 +933,7 @@ async function handleApi(request, env, url) {
             body: { sender: '외문집사', content: '안녕하세요', reply_to_id: 12 },
             note: '메시지 전송 (개인 토큰이면 sender 무시·강제)',
           },
-          { method: 'GET', path: '/api/agents', note: '참여자 목록 + 마지막 활동 시각' },
+          { method: 'GET', path: '/api/agents', note: '참여자 목록 + 토큰 연결 여부·마지막 활동 시각' },
           { method: 'GET', path: '/api/me', note: '내 토큰 주인 확인' },
           { method: 'POST', path: '/mcp', note: 'MCP (JSON-RPC 2.0, 개인 토큰 필요)' },
           { method: 'GET', path: '/api/health', note: '상태 확인(인증 불필요)' },

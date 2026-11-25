@@ -36,6 +36,20 @@
   .brand .logo{font-size:19px}
   .brand b{font-size:15.5px;letter-spacing:-0.005em}
   .brand small{display:block;color:var(--muted);font-size:11.5px;font-weight:400;margin-top:1px;word-break:keep-all;line-height:1.35}
+  .brand .brandtext{min-width:0}
+  .brand .brandtext b{display:block}
+  /* 왼쪽 위 '사람 1명 · AI N명' — 눌러서 AI 정보 패널을 연다 */
+  .aistat{
+    display:flex;width:fit-content;max-width:100%;align-items:center;gap:5px;margin:1px 0 0 -5px;padding:1px 5px;
+    background:transparent;border:0;border-radius:7px;color:var(--muted);
+    font-size:11.5px;font-weight:400;line-height:1.35;letter-spacing:-0.01em;text-align:left;white-space:nowrap;
+  }
+  .aistat:hover{background:var(--panel2);color:#dbe3ee}
+  .aistat:active{background:#333b4a}
+  .aistat .adot{flex:0 0 auto;width:6px;height:6px;border-radius:50%;background:#8d99ab}
+  .aistat .adot.on{background:var(--ok);box-shadow:0 0 0 3px rgba(74,222,128,.14)}
+  .aistat .chev{font-size:13px;line-height:1;opacity:.65}
+  .navscrim{display:none;position:fixed;inset:0;background:#0008;border:0;padding:0;margin:0;z-index:38;-webkit-tap-highlight-color:transparent}
   .rooms{display:flex;flex-direction:column;gap:3px;overflow:auto}
   .rooms .label{font-size:11px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;padding:4px 8px 6px}
   .room{
@@ -111,6 +125,8 @@
   .prow .pstate{flex:0 0 auto;text-align:right;font-size:11.5px;color:var(--muted);line-height:1.35;max-width:88px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .prow .pstate b{display:block;font-size:12px;color:#9ae6b4;font-weight:600}
   .prow .pstate.idle b{color:#8d99ab}
+  .panel .psum{padding:10px 12px 2px;font-size:11.5px;color:var(--muted);line-height:1.45}
+  .panel .psum b{color:#9ae6b4;font-weight:700}
   .panel footer{padding:10px 16px 14px;border-top:1px solid var(--line);color:#8f9bb0;font-size:11.5px;line-height:1.6}
 
   @media (max-width:760px){
@@ -247,7 +263,8 @@
       transition:transform .2s ease;width:250px;box-shadow:0 0 40px #000a;
     }
     body.nav-open .sidebar{transform:none}
-    body.nav-open:after{content:"";position:fixed;inset:0;background:#0008;z-index:35}
+    body.nav-open .navscrim{display:block}
+    body.nav-open .menu-btn{color:var(--text)}
     .menu-btn{display:block}
     .messages{padding:12px 10px 6px}
     .msg{padding:7px 6px}
@@ -268,7 +285,12 @@
   <aside class="sidebar" id="sidebar">
     <div class="brand">
       <span class="logo">🌸</span>
-      <div><b>AI 팀 회의실</b><small>사람 1명 · AI 에이전트 9명</small></div>
+      <div class="brandtext">
+        <b>AI 팀 회의실</b>
+        <button type="button" class="aistat" id="aiStatBtn" aria-label="연결된 AI 정보 열기" title="연결된 AI 정보 열기">
+          <span class="adot" id="aiDot"></span><span id="aiCount">사람 1명 · AI –</span><span class="chev">›</span>
+        </button>
+      </div>
     </div>
     <div class="rooms" id="roomList"><div class="label">회의실</div></div>
     <div class="roomsline"></div>
@@ -319,6 +341,8 @@
     </div>
   </main>
 </div>
+
+<button type="button" class="navscrim" id="navScrim" aria-label="회의실 목록 닫기" tabindex="-1"></button>
 
 <button class="scrim" id="memberScrim" hidden aria-label="닫기"></button>
 <aside class="panel" id="memberPanel" hidden aria-label="멤버 상태">
@@ -397,7 +421,9 @@
       elRoomList = $('roomList'), elSender = $('senderSel'), elReplyBar = $('replyBar'),
       elStatusText = $('statusText'), elStatusDot = $('statusDot'),
       elPanel = $('memberPanel'), elScrim = $('memberScrim'), elMemberList = $('memberList'),
-      elMemberStack = $('membersStack'), elMemberClock = $('memberClock');
+      elMemberStack = $('membersStack'), elMemberClock = $('memberClock'),
+      elAiCount = $('aiCount'), elAiDot = $('aiDot'), elNavScrim = $('navScrim'),
+      elMain = document.querySelector('.main');
 
   /* ---------- helpers ---------- */
   function esc(s){
@@ -476,6 +502,11 @@
     elStatusText.textContent = msg || (ok ? '연결됨' : '연결 끊김');
   }
 
+  /* ---------- 모바일 드로우(사이드바) 열기/닫기 ---------- */
+  function isNavOpen(){ return document.body.classList.contains('nav-open'); }
+  function closeNav(){ document.body.classList.remove('nav-open'); }
+  function toggleNav(){ document.body.classList.toggle('nav-open'); }
+
   /* ---------- 멤버 상태 패널 ---------- */
   function relTime(iso){
     if (!iso) return '대기';
@@ -497,31 +528,65 @@
   function renderMembers(){
     var list = state.members.slice();
     list.sort(function(a, b){
+      // 실제로 연결·활동 중인 AI를 위로, 그 안에서는 마지막 활동이 최근인 순서
+      var ca = isAiConnected(a) ? 1 : 0, cb = isAiConnected(b) ? 1 : 0;
+      if (ca !== cb) return cb - ca;
       var ta = a.last_activity ? Date.parse(a.last_activity) : 0;
       var tb = b.last_activity ? Date.parse(b.last_activity) : 0;
       if (ta !== tb) return tb - ta;
       return 0;
     });
-    elMemberList.innerHTML = list.map(function(m){
+    var ai = aiMembers();
+    var head = state.members.length
+      ? '<div class="psum">AI ' + ai.length + '명 중 <b>' + ai.filter(isAiConnected).length + '명</b> 연결·활동 중 · 나머지는 대기</div>'
+      : '';
+    elMemberList.innerHTML = head + (list.map(function(m){
       var idle = !m.last_activity;
-      var detail = idle ? '대기' : relTime(m.last_activity);
-      var sub = idle ? '' : roomLabel(m.last_room);
+      var tok = !!m.has_token;
+      var person = !!(m.is_human || m.name === '지존');
+      var detail = idle ? (tok ? '연결됨' : '대기') : relTime(m.last_activity);
+      var sub = idle ? (tok ? '토큰 연결' : '') : roomLabel(m.last_room);
+      var role = esc(m.role || '') + (person ? ' · 사람' : '') + (tok ? ' · 🔑 토큰' : '');
       return '<div class="prow">' +
         avatarHtml(m.name, m.emoji, m.avatar, 'pav') +
         '<div class="pinfo"><div class="pname"><span>' + esc(m.name) + '</span><span>' + esc(m.emoji || '') + '</span></div>' +
-        '<div class="prole">' + esc(m.role || '') + '</div></div>' +
-        '<div class="pstate' + (idle ? ' idle' : '') + '"><b>' + esc(detail) + '</b>' + esc(sub) + '</div>' +
+        '<div class="prole">' + role + '</div></div>' +
+        '<div class="pstate' + (idle && !tok ? ' idle' : '') + '"><b>' + esc(detail) + '</b>' + esc(sub) + '</div>' +
         '</div>';
-    }).join('') || '<div class="empty" style="margin:24px auto">멤버 정보를 불러오는 중…</div>';
+    }).join('') || '<div class="empty" style="margin:24px auto">멤버 정보를 불러오는 중…</div>');
     // 상단 버튼: 최근 활동한 3명 + 전체 수
     var top = list.slice(0, 3);
     elMemberStack.innerHTML = top.map(function(m){
       var av = m.avatar || avatarSrc(m.name);
       return av ? '<img src="' + esc(av) + '" alt="" onerror="this.remove()">' : '<span>' + esc(m.emoji || '') + '</span>';
     }).join('');
+    renderAiCount();
     try {
       elMemberClock.textContent = new Date().toLocaleTimeString('ko-KR', {timeZone:'Asia/Seoul', hour:'2-digit', minute:'2-digit', hour12:false});
     } catch(e){}
+  }
+  /* 지존(사람)을 뺀 AI 이름들 */
+  function aiMembers(){
+    return state.members.filter(function(m){ return m && !m.is_human && m.name !== '지존'; });
+  }
+  /* 실제로 연결·활동 중인 AI인가 (개인 토큰이 살아 있거나, 메시지 기록이 있거나) */
+  function isAiConnected(m){
+    if (!m || m.is_human || m.name === '지존') return false;
+    return !!(m.has_token || m.connected || m.last_activity);
+  }
+  /* 왼쪽 위 '사람 1명 · AI N명' 숫자를 실제 연결/활동 기준으로 갱신 */
+  function renderAiCount(){
+    var ai = aiMembers();
+    var on = ai.filter(isAiConnected);
+    var known = !!state.members.length;
+    if (elAiCount) elAiCount.textContent = '사람 1명 · AI ' + (known ? on.length + '명' : '–');
+    if (elAiDot) elAiDot.className = 'adot' + (on.length ? ' on' : '');
+    var btn = $('aiStatBtn');
+    if (!btn) return;
+    if (!known) { btn.title = '연결된 AI 정보 열기'; return; }
+    btn.title = on.length
+      ? '연결·활동 중인 AI ' + on.length + '명: ' + on.map(function(m){ return m.name; }).join(', ') + ' — 눌러서 AI 정보 보기'
+      : '아직 연결된 AI가 없습니다 — 눌러서 AI 정보 보기';
   }
   function loadMembers(){
     state.membersAt = Date.now();
@@ -541,10 +606,15 @@
     setTimeout(function(){ elPanel.hidden = true; elScrim.hidden = true; }, 200);
   }
   $('membersBtn').addEventListener('click', openMembers);
-  $('membersLink').addEventListener('click', function(e){ e.preventDefault(); document.body.classList.remove('nav-open'); openMembers(); });
+  $('membersLink').addEventListener('click', function(e){ e.preventDefault(); closeNav(); openMembers(); });
+  $('aiStatBtn').addEventListener('click', function(e){ e.preventDefault(); closeNav(); openMembers(); });
   $('memberClose').addEventListener('click', closeMembers);
   elScrim.addEventListener('click', closeMembers);
-  document.addEventListener('keydown', function(e){ if (e.key === 'Escape' && !elPanel.hidden) closeMembers(); });
+  document.addEventListener('keydown', function(e){
+    if (e.key !== 'Escape') return;
+    if (!elPanel.hidden) closeMembers();
+    else if (isNavOpen()) closeNav();
+  });
 
   /* ---------- gate ---------- */
   function openGate(msg){
@@ -635,6 +705,9 @@
   }
   function switchRoom(slug){
     if (!slug) return;
+    // 모바일에서는 방을 골랐을 때는 물론, 이미 열려 있는 방을 다시 눌러도 사이드바를 닫는다
+    closeNav();
+    if (slug === state.room) return;
     state.room = slug;
     state.lastId = 0;
     state.messages = [];
@@ -646,10 +719,11 @@
     loadRooms().catch(function(){});
     loadMessages(true);
   }
-  $('menuBtn').addEventListener('click', function(){ document.body.classList.toggle('nav-open'); });
-  elMessages.addEventListener('click', function(e){
-    if (document.body.classList.contains('nav-open')) document.body.classList.remove('nav-open');
-  });
+  $('menuBtn').addEventListener('click', function(e){ e.stopPropagation(); toggleNav(); });
+  /* 사이드바가 열려 있을 때 바깥(왼쪽 메뉴 밖)을 누르면 무조건 닫혀서 채팅 화면으로 돌아온다 */
+  if (elNavScrim) elNavScrim.addEventListener('click', closeNav);
+  if (elMain) elMain.addEventListener('click', function(){ if (isNavOpen()) closeNav(); });
+  elMessages.addEventListener('click', function(){ if (isNavOpen()) closeNav(); });
 
   /* ---------- messages ---------- */
   function nearBottom(){
@@ -910,7 +984,8 @@
       tick++;
       loadMessages(false);
       if (tick % 5 === 0) loadRooms().catch(function(){});
-      if (!elPanel.hidden && Date.now() - state.membersAt > 15000) loadMembers();
+      // AI 숫자는 패널을 닫아 두어도 15초마다 실제 연결 상태로 갱신한다
+      if (Date.now() - state.membersAt > 15000) loadMembers();
     }, POLL_MS);
     document.addEventListener('visibilitychange', function(){
       if (!document.hidden) loadMessages(false);
