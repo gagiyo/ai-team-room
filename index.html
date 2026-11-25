@@ -192,7 +192,7 @@
   .crow{display:flex;align-items:flex-end;gap:8px}
   select#senderSel{
     background:#1a1f27;color:var(--text);border:1px solid var(--line);border-radius:10px;
-    padding:9px 8px;font-size:13px;max-width:104px;flex:0 0 auto;
+    padding:9px 8px;font-size:13px;max-width:210px;flex:0 0 auto;
   }
   #input{
     flex:1;resize:none;background:#101419;color:var(--text);border:1px solid var(--line);
@@ -237,7 +237,7 @@
     .msg{padding:7px 6px}
     .replybtn{opacity:1;position:static;margin-top:4px;background:transparent;border:0;color:#6d7787;padding:0;font-size:11px}
     .composer{padding:9px 10px 12px}
-    #senderSel{max-width:88px;font-size:12.5px;padding:9px 4px}
+    #senderSel{max-width:150px;font-size:12.5px;padding:9px 4px}
     #sendBtn{padding:10px 12px}
     .pill{display:none}
     .members-btn .stack{display:none}
@@ -324,20 +324,20 @@
 (function(){
   "use strict";
   var SENDERS = [
-    {name:'CEO', emoji:'👑', role:'대표 · 최종 결정'},
-    {name:'PM', emoji:'🌸', role:'기획 · 일정 · 우선순위'},
-    {name:'Dev', emoji:'⚡', role:'개발 · 자동화'},
-    {name:'Reviewer', emoji:'🎩', role:'코드 리뷰 · 버그 감시'},
-    {name:'Strategist', emoji:'🧠', role:'전략 참모 · 교차검증'},
-    {name:'Research', emoji:'🎵', role:'리서치 · 자료조사'},
-    {name:'Designer', emoji:'💡', role:'디자인 · 카피'},
-    {name:'Ops', emoji:'🧭', role:'운영 · 모니터링'},
-    {name:'Secretary', emoji:'🫑', role:'비서 · 정리 · 기록'}
+    {name:'지존', emoji:'👑', role:'최종 결정'},
+    {name:'수석호위', emoji:'🥒', role:'메인 비서·조율'},
+    {name:'외문집사', emoji:'🌱', role:'서포트·조사/초안'},
+    {name:'연금술사', emoji:'⚡', role:'개발·자동화'},
+    {name:'어사', emoji:'🎩', role:'검수·버그 감시'},
+    {name:'군사', emoji:'🧠', role:'전략·큰그림'},
+    {name:'정보상', emoji:'🔍', role:'리서치·자료수집'},
+    {name:'환술사', emoji:'🎨', role:'디자인·글쓰기'},
+    {name:'총무장로', emoji:'🧭', role:'일정·기록·챙김'}
   ];
   /* 각 에이전트의 마스코트 (avatars/{id}.png · 실패하면 이모지로 폴백) */
   var AVATAR = {
-    'CEO':'crown', 'PM':'sprout', 'Dev':'bolt', 'Reviewer':'shield', 'Strategist':'spiral',
-    'Research':'magnifier', 'Designer':'pen', 'Ops':'compass', 'Secretary':'note'
+    '지존':'crown', '수석호위':'note', '외문집사':'sprout', '연금술사':'bolt', '어사':'shield',
+    '군사':'spiral', '정보상':'magnifier', '환술사':'pen', '총무장로':'compass'
   };
   function avatarSrc(name){
     var id = AVATAR[name];
@@ -574,7 +574,7 @@
   /* ---------- rooms ---------- */
   function renderSenders(){
     elSender.innerHTML = SENDERS.map(function(s){
-      return '<option value="' + esc(s.name) + '" title="' + esc(s.role) + '">' + s.emoji + ' ' + esc(s.name) + '</option>';
+      return '<option value="' + esc(s.name) + '" title="' + esc(s.name + ' · ' + s.role) + '">' + s.emoji + ' ' + esc(s.name) + ' (' + esc(s.role) + ')</option>';
     }).join('');
     elSender.value = state.sender;
   }

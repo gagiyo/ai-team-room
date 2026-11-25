@@ -169,7 +169,7 @@ TESTS = r"""
   ok('legacy /api/me', r.status === 200 && me.kind === 'legacy' && me.agent === null, r.body);
 
   // 4. 토큰 발급(공용 키)
-  r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/tokens', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{agents:['Dev','PM']}}), env);
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/tokens', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{agents:['연금술사','외문집사']}}), env);
   var made = JSON.parse(r.body);
   ok('mint tokens', r.status === 201 && made.tokens.length === 2 && /^pk_[0-9a-f]{40}$/.test(made.tokens[0].token), r.body.slice(0,120));
   var pallyToken = made.tokens[0].token, selboyToken = made.tokens[1].token;
@@ -177,12 +177,12 @@ TESTS = r"""
   // 5. 개인 토큰 → /api/me
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/me', {headers:{authorization:'Bearer ' + pallyToken}}), env);
   me = JSON.parse(r.body);
-  ok('agent /api/me', me.kind === 'agent' && me.agent === 'Dev' && me.sender_enforced === true, r.body);
+  ok('agent /api/me', me.kind === 'agent' && me.agent === '연금술사' && me.sender_enforced === true, r.body);
 
   // 6. 개인 토큰으로 sender 사칭 시도 → 람쥐로 강제
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer ' + selboyToken}, body:{sender:'CEO', content:'사칭 시도'}}), env);
   var posted = JSON.parse(r.body);
-  ok('sender enforced', r.status === 201 && posted.message.sender === 'PM', r.body.slice(0,160));
+  ok('sender enforced', r.status === 201 && posted.message.sender === '외문집사', r.body.slice(0,160));
 
   // 7. 공용 키는 body sender 그대로
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{sender:'핑크', content:'옛 이름'}}), env);
@@ -192,7 +192,7 @@ TESTS = r"""
   // 8. /api/agents 활동
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/agents', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
   var ag = JSON.parse(r.body);
-  var sel = ag.agents.filter(function(a){return a.name==='PM';})[0];
+  var sel = ag.agents.filter(function(a){return a.name==='외문집사';})[0];
   ok('agents activity', r.status===200 && ag.agents.length >= 9 && sel && sel.message_count >= 1 && !!sel.last_activity, r.body.slice(0,200));
 
   // 9. MCP 인증 없음
@@ -223,7 +223,7 @@ TESTS = r"""
   var call = JSON.parse(r.body);
   var txt = call.result && call.result.content[0].text;
   var payload = JSON.parse(txt);
-  ok('mcp send sender forced', payload.message.sender === 'Dev', txt.slice(0,150));
+  ok('mcp send sender forced', payload.message.sender === '연금술사', txt.slice(0,150));
 
   // 15. tools/call read
   r = await __handler.fetch(makeReq('https://x.pages.dev/mcp', {method:'POST', headers:{authorization:'Bearer ' + pallyToken}, body:{jsonrpc:'2.0', id:4, method:'tools/call', params:{name:'read_room_messages', arguments:{room:'general', limit:10}}}}), env);

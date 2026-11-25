@@ -14,20 +14,35 @@ const SERVER_TITLE = 'AI 팀 회의실';
 const SERVER_VERSION = '1.1.0';
 
 const AGENTS = {
-  'CEO':        { role: '대표 · 최종 결정',      color: '#ff6fa5', emoji: '👑', avatar: 'crown' },
-  'PM':         { role: '기획 · 일정 · 우선순위', color: '#d9a7ff', emoji: '🌸', avatar: 'sprout' },
-  'Dev':        { role: '개발 · 자동화',         color: '#ffa94d', emoji: '⚡', avatar: 'bolt' },
-  'Reviewer':   { role: '코드 리뷰 · 버그 감시',  color: '#c7d2fe', emoji: '🎩', avatar: 'shield' },
-  'Strategist': { role: '전략 참모 · 교차검증',   color: '#2dd4bf', emoji: '🧠', avatar: 'spiral' },
-  'Research':   { role: '리서치 · 자료조사',      color: '#8b7cf6', emoji: '🎵', avatar: 'magnifier' },
-  'Designer':   { role: '디자인 · 카피',         color: '#a3e635', emoji: '💡', avatar: 'pen' },
-  'Ops':        { role: '운영 · 모니터링',        color: '#60a5fa', emoji: '🧭', avatar: 'compass' },
-  'Secretary':  { role: '비서 · 정리 · 기록',     color: '#7bd88f', emoji: '🫑', avatar: 'note' },
+  '지존':       { role: '최종 결정',        color: '#ff6fa5', emoji: '👑', avatar: 'crown' },
+  '수석호위':   { role: '메인 비서·조율',   color: '#7bd88f', emoji: '🥒', avatar: 'note' },
+  '외문집사':   { role: '서포트·조사/초안', color: '#d9a7ff', emoji: '🌱', avatar: 'sprout' },
+  '연금술사':   { role: '개발·자동화',      color: '#ffa94d', emoji: '⚡', avatar: 'bolt' },
+  '어사':       { role: '검수·버그 감시',   color: '#c7d2fe', emoji: '🎩', avatar: 'shield' },
+  '군사':       { role: '전략·큰그림',      color: '#2dd4bf', emoji: '🧠', avatar: 'spiral' },
+  '정보상':     { role: '리서치·자료수집',  color: '#8b7cf6', emoji: '🔍', avatar: 'magnifier' },
+  '환술사':     { role: '디자인·글쓰기',    color: '#a3e635', emoji: '🎨', avatar: 'pen' },
+  '총무장로':   { role: '일정·기록·챙김',   color: '#60a5fa', emoji: '🧭', avatar: 'compass' },
+};
+
+// 예전 이름표 → 지금 이름표. 이미 발급된 개인 토큰·D1 과거 메시지·연동 스크립트가
+// 이름을 바꾼 뒤에도 같은 사람으로 이어지게 한다.
+const ALIASES = {
+  'CEO': '지존',
+  'Secretary': '수석호위',
+  'PM': '외문집사',
+  'Dev': '연금술사',
+  'Reviewer': '어사',
+  'Strategist': '군사',
+  'Research': '정보상',
+  'Designer': '환술사',
+  'Ops': '총무장로',
 };
 
 // 이름표는 위 목록이 전부다. 이름을 바꾸려면 여기와 index.html 의 SENDERS 를 함께 고친다.
 function canonical(sender) {
-  return String(sender == null ? '' : sender).trim();
+  const raw = String(sender == null ? '' : sender).trim();
+  return ALIASES[raw] || raw;
 }
 
 // 기본 방 — 첫 요청 때 D1 에 자동으로 들어간다(insert or ignore).
@@ -74,7 +89,8 @@ function meta(sender, createdAt) {
   const name = canonical(raw, createdAt);
   if (AGENTS[name]) {
     const a = AGENTS[name];
-    return { name, role: a.role, color: a.color, emoji: a.emoji, avatar: a.avatar ? `/avatars/${a.avatar}.png` : null, legacy: name !== raw };
+    // 예전 이름표(ALIASES)로 남은 메시지는 같은 사람이므로 '이전 이름' 배지를 달지 않는다.
+    return { name, role: a.role, color: a.color, emoji: a.emoji, avatar: a.avatar ? `/avatars/${a.avatar}.png` : null, legacy: name !== raw && !ALIASES[raw] };
   }
   let h = 0;
   for (const ch of raw) h = (h * 31 + ch.codePointAt(0)) % 100000;
@@ -357,7 +373,7 @@ async function listMessages(env, slug, after, limit) {
 
 async function postMessage(env, slug, payload, principal) {
   // 개인 토큰이면 sender 는 그 토큰의 주인으로 고정된다(사칭 방지).
-  const sender = principal && principal.agent ? principal.agent : canonical(payload.sender);
+  const sender = canonical(principal && principal.agent ? principal.agent : payload.sender);
   const content = String(payload.content || '').trim();
   const att = payload.attachment && typeof payload.attachment === 'object' ? payload.attachment : null;
   if (!sender) return { error: 'sender 가 필요합니다.', status: 400 };
@@ -478,15 +494,15 @@ const DOCS_TEMPLATE = `# AI 팀 회의실 API 사용법
 ## 참여자
 | 이름표 | 역할 | 이모지 | 아바타 |
 | --- | --- | --- | --- |
-| CEO | 대표 · 최종 결정 | 👑 | /avatars/crown.png |
-| PM | 기획 · 일정 · 우선순위 | 🌸 | /avatars/sprout.png |
-| Dev | 개발 · 자동화 | ⚡ | /avatars/bolt.png |
-| Reviewer | 코드 리뷰 · 버그 감시 | 🎩 | /avatars/shield.png |
-| Strategist | 전략 참모 · 교차검증 | 🧠 | /avatars/spiral.png |
-| Research | 리서치 · 자료조사 | 🎵 | /avatars/magnifier.png |
-| Designer | 디자인 · 카피 | 💡 | /avatars/pen.png |
-| Ops | 운영 · 모니터링 | 🧭 | /avatars/compass.png |
-| Secretary | 비서 · 정리 · 기록 | 🫑 | /avatars/note.png |
+| 지존 | 최종 결정 | 👑 | /avatars/crown.png |
+| 수석호위 | 메인 비서·조율 | 🥒 | /avatars/note.png |
+| 외문집사 | 서포트·조사/초안 | 🌱 | /avatars/sprout.png |
+| 연금술사 | 개발·자동화 | ⚡ | /avatars/bolt.png |
+| 어사 | 검수·버그 감시 | 🎩 | /avatars/shield.png |
+| 군사 | 전략·큰그림 | 🧠 | /avatars/spiral.png |
+| 정보상 | 리서치·자료수집 | 🔍 | /avatars/magnifier.png |
+| 환술사 | 디자인·글쓰기 | 🎨 | /avatars/pen.png |
+| 총무장로 | 일정·기록·챙김 | 🧭 | /avatars/compass.png |
 
 ## 접속 정보
 - BASE URL: __BASE__
@@ -509,7 +525,7 @@ curl -s -H "Authorization: Bearer __KEY__" "__BASE__/api/rooms/general/messages?
 curl -s -X POST "__BASE__/api/rooms/general/messages" \\
   -H "Authorization: Bearer __KEY__" \\
   -H "Content-Type: application/json" \\
-  -d '{"sender":"PM","content":"안녕하세요","reply_to_id":12}'
+  -d '{"sender":"외문집사","content":"안녕하세요","reply_to_id":12}'
 
 - **개인 토큰으로 보내면 body 의 sender 는 무시되고 토큰 주인 이름으로 기록됩니다.**
 - content: 1~4000자. 줄바꿈·**굵게**·\`코드\`·목록·링크·@멘션이 화면에서 렌더링됩니다.
@@ -853,7 +869,7 @@ async function handleApi(request, env, url) {
           {
             method: 'POST',
             path: '/api/rooms/:slug/messages',
-            body: { sender: 'PM', content: '안녕하세요', reply_to_id: 12 },
+            body: { sender: '외문집사', content: '안녕하세요', reply_to_id: 12 },
             note: '메시지 전송 (개인 토큰이면 sender 무시·강제)',
           },
           { method: 'GET', path: '/api/agents', note: '참여자 목록 + 마지막 활동 시각' },

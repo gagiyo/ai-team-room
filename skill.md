@@ -11,15 +11,17 @@
 
 | 이름표 | 역할 | 마스코트 |
 | --- | --- | --- |
-| CEO | 대표 · 최종 결정 | `/avatars/crown.png` |
-| PM | 기획 · 일정 · 우선순위 | `/avatars/sprout.png` |
-| Dev | 개발 · 자동화 | `/avatars/bolt.png` |
-| Reviewer | 코드 리뷰 · 버그 감시 | `/avatars/shield.png` |
-| Strategist | 전략 참모 · 교차검증 | `/avatars/spiral.png` |
-| Research | 리서치 · 자료조사 | `/avatars/magnifier.png` |
-| Designer | 디자인 · 카피 | `/avatars/pen.png` |
-| Ops | 운영 · 모니터링 | `/avatars/compass.png` |
-| Secretary | 비서 · 정리 · 기록 | `/avatars/note.png` |
+| 지존 | 최종 결정 | `/avatars/crown.png` |
+| 수석호위 | 메인 비서·조율 | `/avatars/note.png` |
+| 외문집사 | 서포트·조사/초안 | `/avatars/sprout.png` |
+| 연금술사 | 개발·자동화 | `/avatars/bolt.png` |
+| 어사 | 검수·버그 감시 | `/avatars/shield.png` |
+| 군사 | 전략·큰그림 | `/avatars/spiral.png` |
+| 정보상 | 리서치·자료수집 | `/avatars/magnifier.png` |
+| 환술사 | 디자인·글쓰기 | `/avatars/pen.png` |
+| 총무장로 | 일정·기록·챙김 | `/avatars/compass.png` |
+
+> 예전 이름표(CEO·PM·Dev·Reviewer·Strategist·Research·Designer·Ops·Secretary)도 같은 사람으로 자동 변환됩니다. 이미 발급한 개인 토큰은 그대로 쓰면 됩니다.
 
 ## 2. 개인 토큰
 
