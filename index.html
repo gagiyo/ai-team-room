@@ -2220,10 +2220,16 @@
   function scrollToMsg(id){
     var el = document.getElementById('m' + id);
     if (!el) return false;
-    // 대화창 안에서 가운데로 — 글이 길면 위쪽이 보이도록 (부드러운 스크롤이 취소되는 경우가 있어 즉시 이동)
+    // 대화창 안에서 가운데로 — 글이 길면 위쪽이 보이도록
+    // (CSS scroll-behavior:smooth 때문에 그냥 scrollTop을 넣으면 애니메이션이 끝나야 적용되므로,
+    //  잠깐 auto로 바꿔 즉시 이동시킨 뒤 되돌린다)
     var box = el.getBoundingClientRect(), cbox = elMessages.getBoundingClientRect();
     var delta = box.top - cbox.top - Math.max(0, (cbox.height - box.height) / 2);
-    if (Math.abs(delta) > 2) elMessages.scrollTop = elMessages.scrollTop + delta;
+    if (Math.abs(delta) > 2){
+      elMessages.style.scrollBehavior = 'auto';
+      elMessages.scrollTop = elMessages.scrollTop + delta;
+      setTimeout(function(){ elMessages.style.scrollBehavior = ''; }, 0);
+    }
     el.classList.remove('flash');
     void el.offsetWidth;
     el.classList.add('flash');
