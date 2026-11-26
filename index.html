@@ -483,6 +483,7 @@
     hasMore: false,
     loadingOlder: false,
     hiddenCount: 0,
+    readOnly: false,
     members: [],
     membersAt: 0
   };
@@ -726,8 +727,10 @@
           fetch('/api/me', {headers:{'X-Room-Key': state.key}, cache:'no-store'})
             .then(function(r){ return r.json(); })
             .then(function(me){
-              if (me && me.kind === 'api'){
+              state.readOnly = !!(me && me.kind === 'api');
+              if (state.readOnly){
                 setStatus(false, '공용 API_KEY(읽기 전용)로 입장했습니다 · 메시지는 웹 입장 비밀번호 키로 로그인해야 보낼 수 있어요');
+                renderAll({keepScroll:true});
               }
             })
             .catch(function(){});
@@ -751,6 +754,7 @@
     if (state.timer){ clearInterval(state.timer); state.timer = null; }
     localStorage.removeItem('ai_team_room_key');
     state.key = '';
+    state.readOnly = false;
     state.messages = []; state.lastId = 0;
     elMessages.innerHTML = '';
     elGateInput.value = '';
@@ -886,7 +890,7 @@
     }
     out += '<div class="msgacts">' +
       '<button type="button" class="actbtn" data-reply="' + m.id + '">답글</button>' +
-      (m.deleted
+      (m.deleted || state.readOnly
         ? ''
         : '<button type="button" class="actbtn' + (m.pinned ? ' pin-on' : '') + '" data-pin="' + m.id + '" title="' +
             (m.pinned ? '고정 해제 (보통 보관으로)' : '고정 — 기간과 무관하게 영구 보관') + '">' +
