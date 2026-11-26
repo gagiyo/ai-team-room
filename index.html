@@ -1871,8 +1871,10 @@
   }
   if (elLatestBtn) elLatestBtn.addEventListener('click', function(){
     state.belowNew = 0;
-    scrollBottom(true);
-    setTimeout(updateLatestBtn, 400);
+    // 멀리 올라가 있으면 부드럽게 굴리지 않고 바로 맨 아래로
+    var dist = elMessages.scrollHeight - elMessages.scrollTop - elMessages.clientHeight;
+    scrollBottom(dist < 2500);
+    setTimeout(updateLatestBtn, 450);
   });
   elMessages.addEventListener('scroll', function(){ updateLatestBtn(); }, {passive: true});
   elMessages.addEventListener('scroll', function(){
