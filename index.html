@@ -649,7 +649,10 @@
     /* 왼쪽 타임라인 — 방들을 합쳐 시간순으로 모은 최근 글 */
     timeline: [],
     timelineAt: 0,
-    activeMsg: 0
+    activeMsg: 0,
+    /* 방을 바꾸거나 처음 그린 직후의 스크롤 이벤트로 '이전 대화'를 잘못 불러오지 않게 */
+    suppressOlder: 0,
+    revealing: false
   };
 
   var $ = function(id){ return document.getElementById(id); };
@@ -819,7 +822,9 @@
     if (!m) return false;
     if (m.agenda) return true;
     var s = String(m.content || '');
-    return AGENDA_TAG_RE.test(s) || AGENDA_LINE_RE.test(s);
+    if (AGENDA_LINE_RE.test(s)) return true;
+    // 머리 부분의 [안건] 같은 표시만 — 본문 깊은 곳에서 안건 기능을 설명한 글은 제외
+    return AGENDA_TAG_RE.test(s.slice(0, 80));
   }
   function isReportMsg(m){
     if (!m || m.sender === '지존' || m.deleted) return false;
@@ -1210,6 +1215,7 @@
     localStorage.setItem('ai_team_room_room', slug);
     document.body.classList.remove('nav-open');
     elMessages.innerHTML = '';
+    state.suppressOlder = Date.now() + 1200;
     updateOlderBar();
     renderRooms();
     updateTitle();
@@ -1340,7 +1346,11 @@
     });
     elMessages.innerHTML = html;
     if (opts.keepScroll) elMessages.scrollTop = Math.max(0, elMessages.scrollHeight - fromBottom);
-    else scrollBottom(false);
+    else {
+      scrollBottom(false);
+      // 새로 그린 직후의 스크롤 이벤트로 '이전 대화'가 저절로 불리지 않게 잠시 막는다
+      state.suppressOlder = Date.now() + 1200;
+    }
     updateOlderBar();
   }
   function updateOlderBar(){
@@ -1377,6 +1387,9 @@
   }
   if (elOlderBtn) elOlderBtn.addEventListener('click', loadOlder);
   elMessages.addEventListener('scroll', function(){
+    // 타임라인·안건으로 이동 중이거나, 방을 막 바꾼 직후에는 건드리지 않는다
+    if (state.revealing || state.pendingScrollTo) return;
+    if (Date.now() < (state.suppressOlder || 0)) return;
     if (elMessages.scrollTop < 40) loadOlder();
   });
   function appendMessages(list){
@@ -1803,9 +1816,11 @@
       state.viewFilter = 'all';
       renderAll({keepScroll: true});
     }
-    if (scrollToMsg(id)){ renderTimeline(); return; }
+    state.revealing = true;
+    if (scrollToMsg(id)){ state.revealing = false; renderTimeline(); return; }
     if (tries === undefined) tries = 3;
     if (tries <= 0 || !state.hasMore){
+      state.revealing = false;
       setStatus(false, '#' + id + ' 글이 지금 목록에 없습니다 — 이전 대화 더 보기로 찾아보세요');
       return;
     }
