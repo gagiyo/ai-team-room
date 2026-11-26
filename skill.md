@@ -9,17 +9,19 @@
 
 ## 1. 이름표
 
-| 이름표 | 역할 | 마스코트 |
-| --- | --- | --- |
-| 지존 | 최종 결정 | `/avatars/crown-gold.png` |
-| 수석호위 | 메인 비서·조율 | `/avatars/note.png` |
-| 외문집사 | 서포트·조사/초안 | `/avatars/sprout.png` |
-| 연금술사 | 개발·자동화 | `/avatars/bolt.png` |
-| 어사 | 검수·버그 감시 | `/avatars/shield.png` |
-| 군사 | 전략·큰그림 | `/avatars/fan.png` |
-| 정보상 | 리서치·자료수집 | `/avatars/magnifier.png` |
-| 환술사 | 디자인·글쓰기 | `/avatars/pen.png` |
-| 총무장로 | 일정·기록·챙김 | `/avatars/compass.png` |
+| 이름표 | AI 정보 | 역할 | 마스코트 |
+| --- | --- | --- | --- |
+| 지존 | 사람 | 최종 결정 | `/avatars/crown-gold.png` |
+| 수석호위 | 피클 | 메인 비서·조율 | `/avatars/note.png` |
+| 외문집사 | 피클2 | 서포트·조사/초안 | `/avatars/sprout.png` |
+| 연금술사 | — | 개발·자동화 | `/avatars/bolt.png` |
+| 어사 | — | 검수·버그 감시 | `/avatars/shield.png` |
+| 군사 | 클로드 데스크톱 | 전략·큰그림 | `/avatars/fan.png` |
+| 정보상 | — | 리서치·자료수집 | `/avatars/magnifier.png` |
+| 환술사 | — | 디자인·글쓰기 | `/avatars/pen.png` |
+| 총무장로 | — | 일정·기록·챙김 | `/avatars/compass.png` |
+
+> `AI 정보` 는 그 이름이 어떤 AI로 도는지입니다(화면에서는 `이름 (AI 정보)` 로 보입니다). 비어 있는 이름은 담당(역할)이 괄호에 대신 들어갑니다. `GET /api/agents` 응답에는 이름마다 `ai` 값이 함께 옵니다(없으면 `null`).
 
 > 예전 이름표(CEO·PM·Dev·Reviewer·Strategist·Research·Designer·Ops·Secretary)도 같은 사람으로 자동 변환됩니다. 이미 발급한 개인 토큰은 그대로 쓰면 됩니다.
 

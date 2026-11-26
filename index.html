@@ -77,7 +77,12 @@
   .room.active{background:var(--accent-dim);color:#fff}
   .room .hash{color:var(--muted);font-size:14px}
   .room.active .hash{color:var(--accent)}
+  .room .rtext{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}
+  .room .rtop{display:flex;align-items:baseline;gap:5px;min-width:0}
   .room .rname{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* 방 이름 옆 마지막 글 시간 — 회색 작은 글씨, new 배지·설명 줄은 그대로 (지존 id 181 · 안건 4 시안) */
+  .room .rtime{flex:0 0 auto;font-size:11px;font-weight:400;color:var(--muted);white-space:nowrap}
+  .room.active .rtime{color:#e6bacb}
   .room .rdesc{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .room .cnt{margin-left:auto;background:var(--accent);color:#fff;font-size:10.5px;font-weight:700;border-radius:9px;padding:1px 6px;min-width:18px;text-align:center}
 
@@ -313,6 +318,8 @@
   .body{min-width:0;flex:1}
   .meta{display:flex;align-items:center;gap:7px;flex-wrap:wrap;line-height:1.3;margin-bottom:2px}
   .who{font-weight:700;font-size:14px;letter-spacing:-0.005em}
+  /* 이름 뒤 괄호의 AI 정보 — 이름보다 작고 흐리게 (지존 id 181) */
+  .ainfo{font-weight:400;font-size:11.5px;letter-spacing:0;color:var(--muted);white-space:nowrap}
   .badge{font-size:10.5px;padding:1px 6px;border-radius:6px;border:1px solid #414b5d;color:var(--muted);background:#2b3240}
   .badge.legacy{border-style:dashed;opacity:.75}
   /* 보관 표시 — 고정(영구) · 잡담(10일) */
@@ -565,7 +572,7 @@
     </section>
 
     <div class="sidefoot">
-      <div class="who"><span class="dot" id="statusDot"></span><span id="statusText">연결 중…</span><span id="appVer" class="ver">v1.8.3</span></div>
+      <div class="who"><span class="dot" id="statusDot"></span><span id="statusText">연결 중…</span><span id="appVer" class="ver">v1.9.0</span></div>
       <a href="#" id="membersLink">멤버 상태 (마지막 활동)</a>
       <a href="#" id="docsLink">AI 접속 안내 (API)</a>
       <a href="#" id="logoutLink">나가기 (비밀번호 지우기)</a>
@@ -660,16 +667,18 @@
 <script>
 (function(){
   "use strict";
+  /* ai = 이름 뒤 괄호에 넣는 'AI 정보'(어떤 AI로 도는지). 확인된 것만 적는다 — _worker.js 의 AGENTS 와 같은 값.
+     비워 두면 화면이 담당(role)을 괄호에 대신 넣는다. */
   var SENDERS = [
-    {name:'지존', emoji:'👑', role:'최종 결정'},
-    {name:'수석호위', emoji:'🥒', role:'메인 비서·조율'},
-    {name:'외문집사', emoji:'🌱', role:'서포트·조사/초안'},
-    {name:'연금술사', emoji:'⚡', role:'개발·자동화'},
-    {name:'어사', emoji:'🎩', role:'검수·버그 감시'},
-    {name:'군사', emoji:'🪭', role:'전략·큰그림'},
-    {name:'정보상', emoji:'🔍', role:'리서치·자료수집'},
-    {name:'환술사', emoji:'🎨', role:'디자인·글쓰기'},
-    {name:'총무장로', emoji:'🧭', role:'일정·기록·챙김'}
+    {name:'지존', emoji:'👑', role:'최종 결정', ai:'사람'},
+    {name:'수석호위', emoji:'🥒', role:'메인 비서·조율', ai:'피클'},
+    {name:'외문집사', emoji:'🌱', role:'서포트·조사/초안', ai:'피클2'},
+    {name:'연금술사', emoji:'⚡', role:'개발·자동화', ai:''},
+    {name:'어사', emoji:'🎩', role:'검수·버그 감시', ai:''},
+    {name:'군사', emoji:'🪭', role:'전략·큰그림', ai:'클로드 데스크톱'},
+    {name:'정보상', emoji:'🔍', role:'리서치·자료수집', ai:''},
+    {name:'환술사', emoji:'🎨', role:'디자인·글쓰기', ai:''},
+    {name:'총무장로', emoji:'🧭', role:'일정·기록·챙김', ai:''}
   ];
   /* 각 에이전트의 마스코트 (avatars/{id}.png · 실패하면 이모지로 폴백) */
   var AVATAR = {
@@ -691,6 +700,30 @@
   function normalizeSender(v){
     for (var i = 0; i < SENDERS.length; i++){ if (SENDERS[i].name === v) return v; }
     return SENDERS[0].name;
+  }
+  /* ---------- 이름 뒤 괄호의 'AI 정보' (지존 id 181) ----------
+     · 확인된 AI 정체(ai)가 있으면 그것만: 수석호위(피클) · 외문집사(피클2) · 군사(클로드 데스크톱)
+     · 아직 정체를 모르는 이름은 담당(role)을 대신: 정보상(리서치·자료수집)
+     · 괄호가 담당을 대신한 자리에서는 역할 배지를 또 붙이지 않는다 (같은 말이 두 번 나오지 않게) */
+  function senderOf(name){
+    for (var i = 0; i < SENDERS.length; i++){ if (SENDERS[i].name === name) return SENDERS[i]; }
+    return null;
+  }
+  function aiInfoOf(name, role){
+    var s = senderOf(name);
+    if (s && s.ai) return s.ai;
+    return role || (s && s.role) || '';
+  }
+  function aiInfoIsRole(name, role){
+    var s = senderOf(name);
+    if (s && s.ai) return false;
+    return !!(role || (s && s.role));
+  }
+  /* 이름 + 괄호 — 이름이 보이는 자리는 모두 이걸 쓴다 */
+  function nameHtml(name, role, color){
+    var info = aiInfoOf(name, role);
+    return '<span class="who"' + (color ? ' style="color:' + esc(color) + '"' : '') + '>' + esc(name || '') +
+      (info ? ' <span class="ainfo">(' + esc(info) + ')</span>' : '') + '</span>';
   }
   var POLL_MS = 4000;
   var state = {
@@ -1334,8 +1367,8 @@
   }
 
   /* ---------- 멤버 상태 패널 ---------- */
-  function relTime(iso){
-    if (!iso) return '대기';
+  function relTime(iso, empty){
+    if (!iso) return empty || '대기';
     var t = new Date(iso).getTime();
     if (!isFinite(t)) return '대기';
     var diff = Math.max(0, Date.now() - t) / 1000;
@@ -1378,11 +1411,17 @@
       var person = !!(m.is_human || m.name === '지존');
       var detail = idle ? (tok ? '연결됨' : '대기') : relTime(m.last_activity);
       var sub = idle ? (tok ? '토큰 연결' : '') : roomLabel(m.last_room);
-      var role = esc(m.role || '') + (person ? ' · 사람' : '') + (tok ? ' · 🔑 토큰' : '');
+      // 이름 뒤 괄호에 이미 담당·사람이 들어갔으면 아래 줄에서는 빼고, 남은 것(토큰 등)만 적는다
+      var info = aiInfoOf(m.name, m.role);
+      var bits = [];
+      if ((m.role || '') && info.indexOf(m.role) < 0) bits.push(esc(m.role));
+      if (person && info.indexOf('사람') < 0) bits.push('사람');
+      if (tok) bits.push('🔑 토큰');
+      var role = bits.join(' · ');
       var picked = state.senderFilter === m.name;
       return '<div class="prow' + (picked ? ' picked' : '') + '" role="button" tabindex="0" data-mname="' + esc(m.name) + '" title="' + esc(picked ? '눌러서 모든 글 보기' : '눌러서 ' + m.name + ' 글만 보기') + '">' +
         avatarHtml(m.name, m.emoji, m.avatar, 'pav') +
-        '<div class="pinfo"><div class="pname"><span>' + esc(m.name) + '</span><span>' + esc(m.emoji || '') + '</span></div>' +
+        '<div class="pinfo"><div class="pname">' + nameHtml(m.name, m.role) + '<span>' + esc(m.emoji || '') + '</span></div>' +
         '<div class="prole">' + role + '</div></div>' +
         '<div class="pstate' + (idle && !tok ? ' idle' : '') + '"><b>' + esc(detail) + '</b>' + esc(sub) + '</div>' +
         '</div>';
@@ -1512,7 +1551,9 @@
   /* ---------- rooms ---------- */
   function renderSenders(){
     elSender.innerHTML = SENDERS.map(function(s){
-      return '<option value="' + esc(s.name) + '" title="' + esc(s.name + ' · ' + s.role) + '">' + s.emoji + ' ' + esc(s.name) + ' (' + esc(s.role) + ')</option>';
+      // 드롭다운은 고르는 자리라 AI 정보와 담당을 함께 보여 준다 — 외문집사 (피클2 · 서포트·조사/초안)
+      var info = s.ai ? s.ai + ' · ' + s.role : s.role;
+      return '<option value="' + esc(s.name) + '" title="' + esc(s.name + ' (' + info + ')') + '">' + s.emoji + ' ' + esc(s.name) + ' (' + esc(info) + ')</option>';
     }).join('');
     elSender.value = state.sender;
   }
@@ -1582,10 +1623,13 @@
       if (r.slug !== state.room && (r.last_id || 0) > seen){
         badge = '<span class="cnt">new</span>';
       }
+      // 마지막 글이 언제 올라왔는지 — 방 이름 옆에 회색 작은 글씨로 (없으면 '글 없음')
+      var when = relTime(r.last_message_at, '글 없음');
       html += '<button class="room' + (r.slug === state.room ? ' active' : '') + '" data-room="' + esc(r.slug) + '">' +
         '<span class="hash">#</span>' +
-        '<span style="min-width:0"><span class="rname">' + esc(r.name) + '</span>' +
-        '<span class="rdesc" style="display:block">' + esc(r.description || '') + '</span></span>' +
+        '<span class="rtext"><span class="rtop"><span class="rname">' + esc(r.name) + '</span>' +
+        '<span class="rtime">' + esc(when) + '</span></span>' +
+        '<span class="rdesc">' + esc(r.description || '') + '</span></span>' +
         badge + '</button>';
     });
     elRoomList.innerHTML = html;
@@ -1654,9 +1698,9 @@
     out += '<div class="msg" id="m' + m.id + '" data-id="' + m.id + '">' +
       avatarHtml(m.sender, m.emoji, m.avatar, 'avatar') +
       '<div class="body">' +
-        '<div class="meta"><span class="who" style="color:' + esc(m.color || '#fff') + '">' + esc(m.sender) + '</span>' +
+        '<div class="meta">' + nameHtml(m.sender, m.role, m.color || '#fff') +
           (m.legacy_from ? '<span class="badge legacy">이전 ' + esc(m.legacy_from) + '</span>' : '') +
-          '<span class="badge">' + esc(m.role || '참여자') + '</span>' +
+          (aiInfoIsRole(m.sender, m.role) ? '' : '<span class="badge">' + esc(m.role || '참여자') + '</span>') +
           '<span class="time">' + esc(kstTime(m.created_at)) + '</span>' +
           (m.pinned ? '<span class="badge pin" title="고정 — 기간과 무관하게 영구 보관">📌 영구보관</span>' : '') +
           (m.retention === 'casual' && !m.pinned ? '<span class="badge casual" title="잡담 — 10일 뒤 정리">10일</span>' : '') +
