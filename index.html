@@ -161,6 +161,11 @@
   .who{font-weight:700;font-size:14px;letter-spacing:-0.005em}
   .badge{font-size:10.5px;padding:1px 6px;border-radius:6px;border:1px solid #414b5d;color:var(--muted);background:#2b3240}
   .badge.legacy{border-style:dashed;opacity:.75}
+  /* 보관 표시 — 고정(영구) · 잡담(10일) */
+  .badge.pin{color:#ffd166;border-color:#6b5a2a;background:#3d3318}
+  .badge.casual{color:#ffb3a7;border-color:#6b3a33;background:#3a2a27}
+  .msgacts .actbtn.pin-on{color:#ffd166;border-color:#6b5a2a}
+  .msgacts .actbtn.casual-on{color:#ffb3a7;border-color:#6b3a33}
   .time{font-size:11px;color:#8f9bb0}
   .content{font-size:15px;line-height:1.68;letter-spacing:-0.01em;word-break:break-word;overflow-wrap:anywhere}
   .content strong{font-weight:700;color:#fff}
@@ -858,7 +863,11 @@
         '<div class="meta"><span class="who" style="color:' + esc(m.color || '#fff') + '">' + esc(m.sender) + '</span>' +
           (m.legacy_from ? '<span class="badge legacy">이전 ' + esc(m.legacy_from) + '</span>' : '') +
           '<span class="badge">' + esc(m.role || '참여자') + '</span>' +
-          '<span class="time">' + esc(kstTime(m.created_at)) + '</span></div>';
+          '<span class="time">' + esc(kstTime(m.created_at)) + '</span>' +
+          (m.pinned ? '<span class="badge pin" title="고정 — 기간과 무관하게 영구 보관">📌 영구보관</span>' : '') +
+          (m.retention === 'casual' && !m.pinned ? '<span class="badge casual" title="잡담 — 10일 뒤 정리">10일</span>' : '') +
+          (m.hidden ? '<span class="badge" title="정리로 숨겨진 글">숨김</span>' : '') +
+          '</div>';
     if (m.reply_to){
       out += '<div class="replyq" data-target="' + m.reply_to.id + '"><b>' + esc(m.reply_to.sender) + '</b><span>' +
         esc(m.reply_to.content || (m.reply_to.attachment ? '📎 ' + m.reply_to.attachment.filename : '')).replace(/\n/g, ' ') + '</span></div>';
@@ -877,6 +886,14 @@
     }
     out += '<div class="msgacts">' +
       '<button type="button" class="actbtn" data-reply="' + m.id + '">답글</button>' +
+      (m.deleted
+        ? ''
+        : '<button type="button" class="actbtn' + (m.pinned ? ' pin-on' : '') + '" data-pin="' + m.id + '" title="' +
+            (m.pinned ? '고정 해제 (보통 보관으로)' : '고정 — 기간과 무관하게 영구 보관') + '">' +
+            (m.pinned ? '고정해제' : '📌 고정') + '</button>' +
+          '<button type="button" class="actbtn' + (m.retention === 'casual' ? ' casual-on' : '') + '" data-casual="' + m.id + '" title="' +
+            (m.retention === 'casual' ? '보통(90일) 보관으로 되돌리기' : '잡담 — 10일 뒤 자동 정리') + '">' +
+            (m.retention === 'casual' ? '보통' : '잡담') + '</button>') +
       (canModify(m)
         ? '<button type="button" class="actbtn" data-edit="' + m.id + '">수정</button>' +
           '<button type="button" class="actbtn danger" data-del="' + m.id + '">삭제</button>'
@@ -990,6 +1007,16 @@
     });
   }
   elMessages.addEventListener('click', function(e){
+    var pinBtn = e.target.closest('[data-pin]');
+    if (pinBtn){
+      toggleFlag(parseInt(pinBtn.getAttribute('data-pin'), 10), 'pinned');
+      return;
+    }
+    var casualBtn = e.target.closest('[data-casual]');
+    if (casualBtn){
+      toggleFlag(parseInt(casualBtn.getAttribute('data-casual'), 10), 'retention');
+      return;
+    }
     var editBtn = e.target.closest('[data-edit]');
     if (editBtn){
       startEdit(parseInt(editBtn.getAttribute('data-edit'), 10));
@@ -1031,6 +1058,34 @@
   /* ---------- 메시지 수정 · 삭제 ---------- */
   function findMsg(id){
     return state.messages.filter(function(x){ return x.id === id; })[0];
+  }
+  /* 보관 표시 토글 — 고정(영구 보관) / 잡담(10일). 서버 권한: 고정은 누구나, 해제·잡담은 쓴 사람 또는 지존 */
+  function toggleFlag(id, kind){
+    var m = findMsg(id);
+    if (!m) return;
+    var payload, done;
+    if (kind === 'pinned'){
+      payload = {pinned: !m.pinned};
+      done = payload.pinned ? '📌 고정했습니다 (영구 보관)' : '고정을 풀었습니다 (기본 90일)';
+    } else {
+      payload = {retention: m.retention === 'casual' ? 'normal' : 'casual'};
+      done = payload.retention === 'casual' ? '잡담으로 표시했습니다 (10일 뒤 정리)' : '보통 보관으로 되돌렸습니다 (90일)';
+    }
+    api('/api/rooms/' + encodeURIComponent(state.room) + '/messages/' + id, {method:'PATCH', body: JSON.stringify(payload)})
+      .then(function(d){
+        var msg = findMsg(id);
+        if (msg && d.message){
+          msg.pinned = !!d.message.pinned;
+          msg.retention = d.message.retention;
+          msg.retention_days = d.message.retention_days;
+          msg.expires_at = d.message.expires_at;
+        }
+        renderAll({keepScroll: true});
+        setStatus(true, done + ' · ' + kstTime(new Date().toISOString()));
+      })
+      .catch(function(err){
+        setStatus(false, '보관 표시를 바꾸지 못했습니다 · ' + (err && err.message ? err.message : '다시 시도'));
+      });
   }
   function startEdit(id){
     var m = findMsg(id);

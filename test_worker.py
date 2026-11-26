@@ -60,12 +60,59 @@ globalThis.crypto = {
 // ---- 메모리 D1 ----
 function makeEnv(){
   var db = {
-    messages: [], nextId: 1, tokens: [], nextTokenId: 1, limits: {}, rooms: [
+    messages: [], nextId: 1, tokens: [], nextTokenId: 1, limits: {}, cols: {}, rooms: [
       {slug:'general', name:'종합 회의실', description:'모두 함께', position:1},
       {slug:'insurance', name:'보험·마케팅', description:'보험', position:2}
     ]
   };
   function norm(sql){ return String(sql).replace(/\s+/g, ' ').trim(); }
+
+  // where 절의 and 조건을 순서대로 해석한다(? 자리 값을 순서대로 소비). order by / limit / offset 도 처리.
+  function filterMessages(rows, s, params){
+    var i = 0;
+    var wi = s.indexOf(' where ');
+    if (wi !== -1) {
+      var tail = s.slice(wi + 7);
+      var cut = tail.search(/ (order by|group by|limit|offset) /);
+      var whereStr = cut === -1 ? tail : tail.slice(0, cut);
+      var preds = whereStr.split(/ and /i);
+      for (var p = 0; p < preds.length; p++) {
+        var pr = preds[p].replace(/\s+/g, ' ').trim();
+        var v;
+        if (/^(m\.)?room_slug = \?$/.test(pr)) { v = params[i++]; rows = rows.filter(function(r){ return r.room_slug === v; }); }
+        else if (/^(m\.)?id = \?$/.test(pr)) { v = params[i++]; rows = rows.filter(function(r){ return r.id === v; }); }
+        else if (/^(m\.)?id > \?$/.test(pr)) { v = params[i++]; rows = rows.filter(function(r){ return r.id > v; }); }
+        else if (/^(m\.)?id < \?$/.test(pr)) { v = params[i++]; rows = rows.filter(function(r){ return r.id < v; }); }
+        else if (/^(m\.)?id >= \?$/.test(pr)) { v = params[i++]; rows = rows.filter(function(r){ return r.id >= v; }); }
+        else if (/^(m\.)?id in \(/.test(pr)) {
+          var n = (pr.match(/\?/g) || []).length;
+          var vals = params.slice(i, i + n); i += n;
+          rows = rows.filter(function(r){ return vals.indexOf(r.id) !== -1; });
+        }
+        else if (/^(m\.)?hidden_at is null$/.test(pr)) rows = rows.filter(function(r){ return !r.hidden_at; });
+        else if (/^(m\.)?hidden_at is not null$/.test(pr)) rows = rows.filter(function(r){ return !!r.hidden_at; });
+        else if (/^(m\.)?hidden_at < \?$/.test(pr)) { v = params[i++]; rows = rows.filter(function(r){ return !!r.hidden_at && String(r.hidden_at) < String(v); }); }
+        else if (/^coalesce\(pinned, \d+\) = 0$/.test(pr)) rows = rows.filter(function(r){ return !r.pinned; });
+        else if (/^coalesce\(retention_kind, 'normal'\) = \?$/.test(pr)) { v = params[i++]; rows = rows.filter(function(r){ return (r.retention_kind || 'normal') === v; }); }
+        else if (/^(m\.)?retention_kind = \?$/.test(pr)) { v = params[i++]; rows = rows.filter(function(r){ return (r.retention_kind || 'normal') === v; }); }
+        else if (/^(m\.)?pinned = \?$/.test(pr)) { v = params[i++]; rows = rows.filter(function(r){ return (r.pinned ? 1 : 0) === (v ? 1 : 0); }); }
+        else if (/^(m\.)?reply_to_id = \?$/.test(pr)) { v = params[i++]; rows = rows.filter(function(r){ return r.reply_to_id === v; }); }
+        else if (/^(m\.)?created_at < \?$/.test(pr)) { v = params[i++]; rows = rows.filter(function(r){ return String(r.created_at) < String(v); }); }
+      }
+    }
+    var om = s.match(/order by\s+(?:m\.)?id\s+(asc|desc)/);
+    if (om) rows = rows.slice().sort(function(a,b){ return om[1] === 'desc' ? b.id - a.id : a.id - b.id; });
+    var lm = s.match(/limit\s+(\?|\d+)/);
+    if (lm) {
+      var lim = lm[1] === '?' ? params[i++] : parseInt(lm[1], 10);
+      var off = 0;
+      var ofm = s.match(/offset\s+(\?|\d+)/);
+      if (ofm) off = ofm[1] === '?' ? params[i++] : parseInt(ofm[1], 10);
+      rows = rows.slice(off, off + lim);
+    }
+    return rows;
+  }
+
   function stmt(sql){
     var params = [];
     var api = {
@@ -79,12 +126,10 @@ function makeEnv(){
           return Promise.resolve(db.tokens.filter(function(t){return t.token_hash===params[0] && !t.revoked;})[0] || null);
         if (s.indexOf('select count, window_start from rate_limits') === 0)
           return Promise.resolve(db.limits[params[0]] || null);
-        if (s.indexOf('select id from messages where room_slug = ? and id = ?') === 0)
-          return Promise.resolve(db.messages.filter(function(m){return m.room_slug===params[0] && m.id===params[1];})[0] || null);
-        if (s.indexOf('select count(*) as n from messages where room_slug = ? and reply_to_id = ?') === 0)
-          return Promise.resolve({n: db.messages.filter(function(m){return m.room_slug===params[0] && m.reply_to_id===params[1];}).length});
-        if (s.indexOf('select m.*, a.filename') === 0)
-          return Promise.resolve(db.messages.filter(function(m){return m.id===params[0];})[0] || null);
+        if (s.indexOf('select count(*) as n from messages') === 0)
+          return Promise.resolve({ n: filterMessages(db.messages.slice(), s, params).length });
+        if (s.indexOf('from messages') !== -1)
+          return Promise.resolve(filterMessages(db.messages.slice(), s, params)[0] || null);
         return Promise.resolve(null);
       },
       all: function(){
@@ -99,14 +144,8 @@ function makeEnv(){
         }
         if (s.indexOf('from rooms r') !== -1)
           return Promise.resolve({results: db.rooms.map(function(r){ return {slug:r.slug, name:r.name, description:r.description, position:r.position, message_count: db.messages.filter(function(m){return m.room_slug===r.slug;}).length, last_id: 0, last_message_at: null}; })});
-        if (s.indexOf('where m.room_slug = ? and m.id < ?') !== -1)
-          return Promise.resolve({results: db.messages.filter(function(m){return m.room_slug===params[0] && m.id<params[1];}).sort(function(a,b){return b.id-a.id;}).slice(0, params[2] || 50)});
-        if (s.indexOf('where m.room_slug = ? and m.id > ?') !== -1)
-          return Promise.resolve({results: db.messages.filter(function(m){return m.room_slug===params[0] && m.id>params[1];}).sort(function(a,b){return a.id-b.id;}).slice(0, params[2] || 50)});
-        if (s.indexOf('where m.room_slug = ? order by m.id desc') !== -1)
-          return Promise.resolve({results: db.messages.filter(function(m){return m.room_slug===params[0];}).sort(function(a,b){return b.id-a.id;}).slice(0, params[1] || 50)});
-        if (s.indexOf('from messages where room_slug = ? and id in') !== -1)
-          return Promise.resolve({results: db.messages.filter(function(m){return m.room_slug===params[0] && params.slice(1).indexOf(m.id)!==-1;})});
+        if (s.indexOf('from messages') !== -1)
+          return Promise.resolve({results: filterMessages(db.messages.slice(), s, params)});
         if (s.indexOf('select id, agent, label, created_at') === 0)
           return Promise.resolve({results: db.tokens});
         return Promise.resolve({results: []});
@@ -114,15 +153,29 @@ function makeEnv(){
       run: function(){
         var s = norm(sql);
         if (s.indexOf('create table') === 0) return Promise.resolve({meta:{}});
+        if (s.indexOf('alter table messages add column') === 0) {
+          var cm = s.match(/add column (\w+)/);
+          var col = cm ? cm[1] : '?';
+          if (db.cols[col]) return Promise.reject(new Error('duplicate column name: ' + col));
+          db.cols[col] = true;
+          return Promise.resolve({meta:{}});
+        }
         if (s.indexOf('insert into rate_limits') === 0) {
           var b = params[0], win = params[1], cur = db.limits[b];
-          var now = Math.floor(Date.now()/1000);
           if (cur && cur.window_start === win) cur.count++;
           else db.limits[b] = {bucket:b, window_start:win, count:1};
           return Promise.resolve({meta:{}});
         }
         if (s.indexOf('insert into messages') === 0) {
-          var row = {id: db.nextId++, room_slug: params[0], sender: params[1], content: params[2], reply_to_id: params[3], attachment_id: params[4], created_at: new Date().toISOString()};
+          var colm = s.match(/insert into messages \(([^)]*)\)/);
+          var cols = colm ? colm[1].split(',').map(function(c){ return c.trim(); }) : [];
+          var row = {id: db.nextId++, pinned: 0, retention_kind: 'normal', hidden_at: null, deleted_at: null, attachment_id: null};
+          var ci = 0;
+          cols.forEach(function(c){
+            if (c === 'created_at') { row.created_at = new Date().toISOString(); return; }
+            row[c] = params[ci++];
+          });
+          if (!row.created_at) row.created_at = new Date().toISOString();
           db.messages.push(row);
           return Promise.resolve({meta:{last_row_id: row.id}});
         }
@@ -133,13 +186,20 @@ function makeEnv(){
         }
         if (s.indexOf('update agent_tokens set last_used_at') === 0) return Promise.resolve({meta:{}});
         if (s.indexOf('update agent_tokens set revoked') === 0) return Promise.resolve({meta:{}});
-        if (s.indexOf('update messages set content') === 0) {
-          var id2 = params[params.length - 1];
-          var t = db.messages.filter(function(m){ return m.id === id2; })[0];
-          if (t) {
-            t.content = params[0];
-            if (s.indexOf('attachment_id = null') !== -1) t.attachment_id = null;
-          }
+        if (s.indexOf('update messages set ') === 0) {
+          var mm = s.match(/set (.*?) where id = \?$/);
+          var assigns = mm ? mm[1].split(',').map(function(x){ return x.trim(); }) : [];
+          var idVal = params[params.length - 1];
+          var row2 = db.messages.filter(function(m){ return m.id === idVal; })[0];
+          var pi = 0;
+          assigns.forEach(function(a){
+            var q1 = a.match(/^(\w+) = \?$/);
+            var n1 = a.match(/^(\w+) = (\d+)$/);
+            var z1 = a.match(/^(\w+) = null$/i);
+            if (q1) { if (row2) row2[q1[1]] = params[pi]; pi++; }
+            else if (n1) { if (row2) row2[n1[1]] = parseInt(n1[2], 10); }
+            else if (z1) { if (row2) row2[z1[1]] = null; }
+          });
           return Promise.resolve({meta:{}});
         }
         if (s.indexOf('delete from attachments') === 0) return Promise.resolve({meta:{}});
@@ -386,6 +446,130 @@ TESTS = r"""
   ok('DELETE bad id 400', r.status === 400, r.status);
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/nope/messages/' + myMsg.id, {method:'DELETE', headers:{authorization:'Bearer ' + selboyToken}}), env);
   ok('DELETE wrong room 404', r.status === 404, r.status);
+
+  /* ---------- 2026-11-26: 보관 표시(고정·잡담) ---------- */
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer ' + selboyToken}, body:{content:'평범한 보고'}}), env);
+  var plain = JSON.parse(r.body).message;
+  ok('default retention', plain.pinned === false && plain.retention === 'normal' && plain.retention_days === 90 && !!plain.expires_at,
+     JSON.stringify({p:plain.pinned, r:plain.retention, d:plain.retention_days}));
+
+  // 고정은 누구나(보호 방향) — 남의 글도 가능
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + plain.id, {method:'PATCH', headers:{authorization:'Bearer ' + pallyToken}, body:{pinned:true}}), env);
+  var pinRes = JSON.parse(r.body);
+  ok('any agent can pin', r.status===200 && pinRes.message.pinned === true && pinRes.message.retention_days === null, r.status + ' ' + r.body.slice(0,160));
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + plain.id, {method:'PATCH', headers:{authorization:'Bearer ' + pallyToken}, body:{pinned:false}}), env);
+  ok('unpin other 403', r.status === 403, r.status + ' ' + r.body.slice(0,120));
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + plain.id, {method:'PATCH', headers:{authorization:'Bearer ' + selboyToken}, body:{pinned:false}}), env);
+  ok('owner unpin', r.status===200 && JSON.parse(r.body).message.pinned === false, r.status);
+
+  // 잡담(10일) — 그 글을 쓴 사람 또는 지존
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + plain.id, {method:'PATCH', headers:{authorization:'Bearer ' + pallyToken}, body:{retention:'casual'}}), env);
+  ok('casual other 403', r.status === 403, r.status);
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + plain.id, {method:'PATCH', headers:{authorization:'Bearer ' + selboyToken}, body:{retention:'casual'}}), env);
+  var casualMsg = JSON.parse(r.body).message;
+  ok('owner casual', r.status===200 && casualMsg.retention === 'casual' && casualMsg.retention_days === 10, r.status + ' ' + r.body.slice(0,160));
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + plain.id, {method:'PATCH', headers:{'x-room-key':'room-pass'}, body:{retention:'normal'}}), env);
+  ok('human sets normal', r.status===200 && JSON.parse(r.body).message.retention === 'normal', r.status);
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer ' + selboyToken}, body:{content:'테스트 사진', retention:'chat'}}), env);
+  var casualNew = JSON.parse(r.body).message;
+  ok('post as casual', r.status===201 && casualNew.retention === 'casual' && casualNew.retention_days === 10, r.body.slice(0,160));
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/999999', {method:'PATCH', headers:{authorization:'Bearer ' + selboyToken}, body:{pinned:true}}), env);
+  ok('flag missing 404', r.status === 404, r.status);
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + plain.id, {method:'PATCH', headers:{authorization:'Bearer ' + selboyToken}, body:{}}), env);
+  ok('flag empty 400', r.status === 400, r.status);
+
+  /* ---------- 2026-11-26: 정리(dry-run · 숨김 · 복원 · 삭제) ---------- */
+  var db = env.DB._raw;
+  function addAged(days, content, extra){
+    var row = {
+      id: db.nextId++, room_slug: (extra && extra.room) || 'general', sender: (extra && extra.sender) || '외문집사',
+      content: content, reply_to_id: null, attachment_id: null,
+      created_at: new Date(Date.now() - days*86400000).toISOString(),
+      pinned: (extra && extra.pinned) ? 1 : 0,
+      retention_kind: (extra && extra.retention) || 'normal',
+      hidden_at: null, deleted_at: null
+    };
+    db.messages.push(row);
+    return row;
+  }
+  var raw95 = addAged(95, '석 달 전 확정 사항: 순천 경매 완납 완료 https://example.com/a');
+  var rawCasual = addAged(12, 'ㅋㅋ 잡담');
+  rawCasual.retention_kind = 'casual';
+  var rawPinned = addAged(95, '석 달 전 중요 결정', {pinned:true});
+  var rawCasualOld = addAged(95, '오래된 잡담', {retention:'casual'});
+  var rawRecent = addAged(5, '최근 정상 글');
+
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/cleanup', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
+  var dry = JSON.parse(r.body);
+  ok('cleanup dry-run', r.status===200 && dry.dry_run === true && dry.targets.total === 3 && dry.targets.casual === 2 && dry.targets.normal === 1,
+     r.status + ' ' + JSON.stringify({total:dry.targets && dry.targets.total, c:dry.targets && dry.targets.casual, n:dry.targets && dry.targets.normal}));
+  ok('cleanup dry-run hid nothing', db.messages.filter(function(m){ return !!m.hidden_at; }).length === 0);
+  ok('cleanup backup', !!dry.backup && dry.backup.summary.total === 3 && dry.backup.messages.length === 3 && dry.backup.summary.links.length >= 1,
+     JSON.stringify(dry.backup && dry.backup.summary && {t:dry.backup.summary.total, l:dry.backup.summary.links.length}));
+
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/cleanup', {headers:{authorization:'Bearer ' + pallyToken}}), env);
+  ok('cleanup agent 403', r.status === 403, r.status);
+
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/cleanup', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{dry_run:false}}), env);
+  var ran = JSON.parse(r.body);
+  ok('cleanup hides', r.status===200 && ran.hidden === 3 && ran.purged.count === 0, r.status + ' ' + r.body.slice(0,200));
+
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages?limit=200', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
+  var visibleIds = (JSON.parse(r.body).messages || []).map(function(m){ return m.id; });
+  ok('hidden gone from list', visibleIds.indexOf(raw95.id) === -1 && visibleIds.indexOf(rawCasualOld.id) === -1 && visibleIds.indexOf(rawPinned.id) !== -1 && visibleIds.indexOf(rawRecent.id) !== -1,
+     JSON.stringify({h95: visibleIds.indexOf(raw95.id), hop: visibleIds.indexOf(rawPinned.id), recent: visibleIds.indexOf(rawRecent.id)}));
+
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages?limit=200&include_hidden=1', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
+  var withHidden = (JSON.parse(r.body).messages || []).filter(function(m){ return m.hidden; });
+  ok('include_hidden shows', withHidden.length === 3, withHidden.length);
+
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages?limit=200&include_hidden=1', {headers:{authorization:'Bearer ' + pallyToken}}), env);
+  ok('agent no include_hidden', (JSON.parse(r.body).messages || []).some(function(m){ return m.hidden; }) === false);
+
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/hidden', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
+  var hid = JSON.parse(r.body);
+  ok('hidden list', r.status===200 && hid.hidden === 3 && hid.messages.length === 3 && hid.messages[0].hidden === true, r.status + ' ' + r.body.slice(0,160));
+
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/restore', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{ids:[raw95.id]}}), env);
+  var rest = JSON.parse(r.body);
+  ok('restore', r.status===200 && rest.restored === 1 && rest.rows[0].pinned === true, r.body.slice(0,160));
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages?after=' + (raw95.id-1) + '&limit=5', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
+  var back = (JSON.parse(r.body).messages || []).filter(function(m){ return m.id === raw95.id; })[0];
+  ok('restore visible pinned', !!back && back.pinned === true && !back.hidden, back ? JSON.stringify({p:back.pinned, h:back.hidden}) : 'missing');
+
+  // 숨긴 지 유예(30일)가 지난 글만 실제로 지운다 — 답글이 있으면 자리표시로 남긴다
+  var oldHidden = addAged(120, '아주 오래된 잡담');
+  oldHidden.hidden_at = new Date(Date.now() - 40*86400000).toISOString();
+  var oldParent = addAged(120, '답글 달린 오래된 글');
+  oldParent.hidden_at = new Date(Date.now() - 40*86400000).toISOString();
+  db.messages.push({id: db.nextId++, room_slug:'general', sender:'연금술사', content:'그 오래된 글에 단 답글', reply_to_id: oldParent.id, attachment_id:null, created_at:new Date().toISOString(), pinned:0, retention_kind:'normal', hidden_at:null, deleted_at:null});
+
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/cleanup', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{purge:true}}), env);
+  var purged = JSON.parse(r.body);
+  var oldLeft = db.messages.filter(function(m){ return m.id === oldHidden.id; }).length;
+  var parentRow = db.messages.filter(function(m){ return m.id === oldParent.id; })[0];
+  ok('purge deletes', purged.purged.count === 2 && purged.purged.deleted === 1 && purged.purged.placeholder === 1 && oldLeft === 0, JSON.stringify(purged.purged));
+  ok('purge keeps quote placeholder', !!parentRow && parentRow.content === '삭제된 메시지입니다.' && !!parentRow.deleted_at, parentRow ? parentRow.content : 'missing');
+
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/cleanup', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{purge:false}}), env);
+  ok('cleanup purge=0 skips', JSON.parse(r.body).purged.count === 0, r.body.slice(0,140));
+
+  /* ---------- 2026-11-26: 아카이브 내보내기 ---------- */
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/archive?room=general&limit=1000', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
+  var arc = JSON.parse(r.body);
+  ok('archive json', r.status===200 && arc.ok === true && arc.messages.length > 0 && arc.summary.total === arc.messages.length, r.status + ' ' + r.body.slice(0,160));
+  ok('archive includes hidden', arc.messages.some(function(m){ return m.id === rawCasualOld.id && !!m.hidden_at; }), 'hidden flag');
+  ok('archive link summary', (arc.summary.links || []).some(function(l){ return l.indexOf('example.com') !== -1; }), JSON.stringify(arc.summary.links));
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/archive?room=general&format=markdown', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
+  ok('archive markdown', r.status===200 && String(r.body).indexOf('# 무림AI방 아카이브') === 0, String(r.body).slice(0,80));
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/archive', {headers:{authorization:'Bearer ' + pallyToken}}), env);
+  ok('archive agent 403', r.status === 403, r.status);
+
+  // 이미 열이 있는 DB(중복 ALTER 실패)에서도 목록이 계속 동작한다
+  var env3 = makeEnv();
+  env3.DB._raw.cols = {pinned:true, retention_kind:true, hidden_at:true, deleted_at:true};
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {headers:{authorization:'Bearer legacy-shared-key'}}), env3);
+  ok('schema re-entry safe', r.status === 200, r.status);
 
   /* ---------- 2026-11-26: 그 밖의 확인 ---------- */
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + myMsg.id, {method:'GET', headers:{authorization:'Bearer legacy-shared-key'}}), env);

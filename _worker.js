@@ -17,17 +17,56 @@
  *  - PATCH /api/rooms/{slug}/messages/{id} — 내가 보낸 메시지 내용 수정
  *  - DELETE /api/rooms/{slug}/messages/{id} — 내가 보낸 메시지 삭제(내용을 '삭제된 메시지입니다.' 자리표시로 바꿔 답글 인용 보존)
  *    · 권한: 개인 토큰이면 그 토큰 주인의 글만, 웹 입장 키(ROOM_KEY)면 '지존'이 보낸 글만. 공용 API_KEY 는 불가
+ *
+ * 2026-11-26 보관 정리 · 아카이브 (지존 id 66·69, 외문집사 id 68, 군사 id 70 합의안)
+ *  - messages 에 pinned / retention_kind / hidden_at / deleted_at 열을 ALTER TABLE ADD COLUMN 으로만 더한다.
+ *    (기존 행·답글 인용은 그대로. 앱을 처음 여는 요청에서 한 번만 시도하고 실패해도 예전 기능은 계속 돈다)
+ *  - 보관 기준: 기본 normal = 90일, casual(잡담·시험) = 10일, pinned = 영구 보관
+ *  - 정리는 두 단계 — 먼저 hidden_at 으로 숨기고(복원 가능), 숨긴 뒤 유예 기간(기본 30일)이 지난 것만 실제로 지운다
+ *  - POST /api/admin/cleanup — 정리 실행(공용 API_KEY 만). GET 은 미리보기(dry-run)
+ *  - GET  /api/admin/archive — 원문 JSON / 요약 마크다운 내보내기
+ *  - GET  /api/admin/hidden, POST /api/admin/restore — 숨김 목록 조회·복원
  */
 
 const SERVER_NAME = 'ai-team-room';
 const SERVER_TITLE = 'AI 팀 회의실';
-const SERVER_VERSION = '1.3.0';
+const SERVER_VERSION = '1.4.0';
 
 // 사람(최종 결정) — AI 숫자 집계에서 뺀다.
 const HUMAN_NAME = '지존';
 
 // 삭제된 메시지의 본문 자리표시 — 답글 인용이 깨지지 않도록 행은 남기고 내용만 바꾼다.
 const DELETED_TEXT = '삭제된 메시지입니다.';
+
+/* ---------- 보관 정책 ---------- */
+// retention_kind: normal = 완결된 정보·결정사항(90일), casual = 잡담·시험 글(10일)
+// pinned = 기간과 무관하게 영구 보관(정리 대상에서 제외)
+const RETENTION_DAYS = { normal: 90, casual: 10 };
+const DEFAULT_GRACE_DAYS = 30; // 숨김(hidden_at) 뒤 이 기간이 지나야 실제로 지운다
+
+// 정리 대상 분류를 받아들일 때 쓰는 말들 — 모르는 말은 안전하게 normal 로 둔다.
+function normalizeRetention(value) {
+  const v = String(value == null ? '' : value).trim().toLowerCase();
+  if (!v) return '';
+  if (v === 'casual' || v === 'chat' || v === 'chatty' || v === '잡담' || v === '시험') return 'casual';
+  if (v === 'normal' || v === 'default' || v === '보통' || v === '기본') return 'normal';
+  if (v === 'pinned' || v === 'pin' || v === 'keep' || v === '고정' || v === '영구') return 'pinned';
+  return '';
+}
+
+function isTruthy(v) {
+  return v === true || v === 1 || v === '1' || v === 'true' || v === 'yes' || v === 'y' || v === 'on';
+}
+
+function isFalse(v) {
+  return v === false || v === 0 || v === '0' || v === 'false' || v === 'no' || v === 'off';
+}
+
+function clampInt(v, d, min, max) {
+  const n = parseInt(v, 10);
+  if (!Number.isFinite(n)) return d;
+  return Math.min(Math.max(n, min), max);
+}
 
 const AGENTS = {
   '지존':       { role: '최종 결정',        color: '#ff6fa5', emoji: '👑', avatar: 'crown' },
@@ -270,7 +309,54 @@ async function authenticate(request, env, url, bearerOnly) {
   return null;
 }
 
+/* ---------- messages 열 증설 (무중단 호환) ---------- */
+
+// 기존 데이터를 건드리지 않고 열만 더한다. 이미 있으면 ALTER 가 실패하는데 그건 정상이다.
+// 한 isolate 당 한 번만 시도하고, 결과(컬럼 사용 가능 여부)를 캐시한다.
+const msgSchemaReady = new WeakMap();
+
+function ensureMessageSchema(env) {
+  if (!env || !env.DB) return Promise.resolve(false);
+  if (msgSchemaReady.has(env)) return msgSchemaReady.get(env);
+  const p = (async () => {
+    const stmts = [
+      'alter table messages add column pinned integer not null default 0',
+      "alter table messages add column retention_kind text not null default 'normal'",
+      'alter table messages add column hidden_at text',
+      'alter table messages add column deleted_at text',
+    ];
+    for (const sql of stmts) {
+      try {
+        await env.DB.prepare(sql).run();
+      } catch (e) {
+        /* 이미 있는 열(duplicate column name) — 그대로 쓴다 */
+      }
+    }
+    // 실제로 열이 붙었는지 확인. 권한 문제 등으로 실패하면 새 기능만 끄고 예전처럼 동작한다.
+    try {
+      await env.DB.prepare('select pinned, retention_kind, hidden_at, deleted_at from messages limit 1').first();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  })();
+  msgSchemaReady.set(env, p);
+  return p;
+}
+
 /* ---------- 메시지 ---------- */
+
+function retentionOf(row) {
+  const pinned = Number(row && row.pinned) ? true : false;
+  const kind = String((row && row.retention_kind) || 'normal').toLowerCase() === 'casual' ? 'casual' : 'normal';
+  const days = pinned ? null : RETENTION_DAYS[kind];
+  let expiresAt = null;
+  if (days != null && row && row.created_at) {
+    const t = Date.parse(row.created_at);
+    if (Number.isFinite(t)) expiresAt = new Date(t + days * 86400000).toISOString();
+  }
+  return { pinned, kind, days, expiresAt };
+}
 
 function decorate(row) {
   const m = meta(row.sender, row.created_at);
@@ -298,6 +384,17 @@ function decorate(row) {
   if (m.legacy) out.legacy_from = String(row.sender).trim();
   // 삭제 표시: 본문이 자리표시와 같으면 화면에서 흐리게 보여 주고 수정·삭제 버튼을 감춘다.
   if (String(row.content == null ? '' : row.content) === DELETED_TEXT) out.deleted = true;
+  // 보관 표시: 고정(영구) / 잡담(10일) / 기본(90일), 그리고 숨김 상태
+  const ret = retentionOf(row);
+  out.pinned = ret.pinned;
+  out.retention = ret.kind;
+  out.retention_days = ret.days;
+  out.expires_at = ret.expiresAt;
+  if (row.hidden_at) {
+    out.hidden = true;
+    out.hidden_at = row.hidden_at;
+  }
+  if (row.deleted_at) out.deleted_at = row.deleted_at;
   return out;
 }
 
@@ -366,7 +463,10 @@ async function getRoom(env, slug) {
   return env.DB.prepare('select slug, name, description from rooms where slug = ?').bind(slug).first();
 }
 
-async function listMessages(env, slug, after, limit, before) {
+async function listMessages(env, slug, after, limit, before, opts) {
+  const includeHidden = !!(opts && opts.includeHidden);
+  const schemaOk = await ensureMessageSchema(env);
+  const hidden = schemaOk && !includeHidden ? ' and m.hidden_at is null' : '';
   const SELECT = `select m.*, a.filename as att_filename, a.mime_type as att_mime_type, a.size as att_size
          from messages m
          left join attachments a on a.id = m.attachment_id`;
@@ -376,7 +476,7 @@ async function listMessages(env, slug, after, limit, before) {
     // 지난 대화 더 보기: before 보다 앞선 메시지를 최신 쪽부터 limit 개(정확한 has_more 판정을 위해 +1개) 조회
     const res = await env.DB.prepare(
       `${SELECT}
-        where m.room_slug = ? and m.id < ?
+        where m.room_slug = ? and m.id < ?${hidden}
         order by m.id desc limit ?`
     )
       .bind(slug, before, limit + 1)
@@ -388,7 +488,7 @@ async function listMessages(env, slug, after, limit, before) {
   } else if (after > 0) {
     const res = await env.DB.prepare(
       `${SELECT}
-        where m.room_slug = ? and m.id > ?
+        where m.room_slug = ? and m.id > ?${hidden}
         order by m.id asc limit ?`
     )
       .bind(slug, after, limit)
@@ -397,7 +497,7 @@ async function listMessages(env, slug, after, limit, before) {
   } else {
     const res = await env.DB.prepare(
       `${SELECT}
-        where m.room_slug = ?
+        where m.room_slug = ?${hidden}
         order by m.id desc limit ?`
     )
       .bind(slug, limit + 1)
@@ -455,12 +555,25 @@ async function postMessage(env, slug, payload, principal) {
     }
   }
 
-  const res = await env.DB.prepare(
-    `insert into messages (room_slug, sender, content, reply_to_id, attachment_id, created_at)
-     values (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))`
-  )
-    .bind(slug, sender, content, replyTo, attachmentId)
-    .run();
+  // 보관 표시 — 처음 올릴 때부터 잡담(10일)·고정(영구)으로 올릴 수 있다. 모르는 값은 기본(90일).
+  const retWanted = normalizeRetention(payload.retention ?? payload.retention_kind ?? payload.tag);
+  const wantPinned = isTruthy(payload.pinned) || retWanted === 'pinned' ? 1 : 0;
+  const wantKind = retWanted === 'casual' ? 'casual' : 'normal';
+  const schemaOk = await ensureMessageSchema(env);
+
+  const res = schemaOk
+    ? await env.DB.prepare(
+        `insert into messages (room_slug, sender, content, reply_to_id, attachment_id, pinned, retention_kind, created_at)
+         values (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))`
+      )
+        .bind(slug, sender, content, replyTo, attachmentId, wantPinned, wantKind)
+        .run()
+    : await env.DB.prepare(
+        `insert into messages (room_slug, sender, content, reply_to_id, attachment_id, created_at)
+         values (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))`
+      )
+        .bind(slug, sender, content, replyTo, attachmentId)
+        .run();
 
   const id = res.meta && res.meta.last_row_id;
   const row = await env.DB.prepare(
@@ -566,6 +679,253 @@ async function softDeleteMessage(env, slug, id) {
   const messages = [decorate(fresh)];
   await attachReplies(env, messages, slug);
   return { hard: false, message: messages[0] };
+}
+
+/* ---------- 보관 표시(고정 · 잡담) ---------- */
+
+// 누가 이 글의 보관 표시를 바꿀 수 있는가.
+//  - 고정(pinned, 영구 보관): 지존(웹 입장 키) 또는 어느 AI든 — '지우지 않기' 방향이라 안전하다
+//  - 고정 해제·잡담(casual, 10일)/보통 표시: 그 글을 쓴 사람 또는 지존
+//    (지존은 방 전체를 정리하는 사람이므로 남의 글에도 표시할 수 있다. 남의 글을 짧게 돌리는 건 지존의 판단)
+function canSetRetention(principal, row, onlyPinned) {
+  if (!principal || !row) return false;
+  if (String(row.content == null ? '' : row.content) === DELETED_TEXT) return false;
+  if (principal.kind === 'room') return true; // 웹 로그인 = 지존 본인
+  const owner = canonical(row.sender);
+  if (principal.agent) {
+    if (onlyPinned) return true; // 고정은 누구나 — 보호 방향
+    return owner === principal.agent;
+  }
+  return false;
+}
+
+async function setMessageFlags(env, slug, id, flags) {
+  const schemaOk = await ensureMessageSchema(env);
+  if (!schemaOk) return { error: '보관 열을 준비하지 못했습니다. 잠시 후 다시 시도하세요.', status: 503 };
+  const sets = [];
+  const vals = [];
+  if (flags.pinned !== undefined) {
+    sets.push('pinned = ?');
+    vals.push(flags.pinned ? 1 : 0);
+  }
+  if (flags.casual !== undefined) {
+    sets.push('retention_kind = ?');
+    vals.push(flags.casual ? 'casual' : 'normal');
+  }
+  if (!sets.length) return { message: null };
+  vals.push(id);
+  await env.DB.prepare(`update messages set ${sets.join(', ')} where id = ?`)
+    .bind(...vals)
+    .run();
+  const row = await findMessage(env, slug, id);
+  if (!row) return { message: null };
+  const messages = [decorate(row)];
+  await attachReplies(env, messages, slug);
+  return { message: messages[0] };
+}
+
+/* ---------- 정리 · 아카이브 ---------- */
+
+function isoDaysAgo(days) {
+  return new Date(Date.now() - days * 86400000).toISOString();
+}
+
+function excerptOf(value, max) {
+  const s = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+  const n = max || 160;
+  return s.length > n ? s.slice(0, n - 1) + '…' : s;
+}
+
+// 보관 기간이 지난 글을 찾는다. 고정(pinned)과 이미 숨긴 글, 이미 지운 자리표시는 제외한다.
+async function findCleanupTargets(env, opts) {
+  const out = [];
+  const groups = [
+    { kind: 'casual', cutoff: isoDaysAgo(opts.casual_days) },
+    { kind: 'normal', cutoff: isoDaysAgo(opts.normal_days) },
+  ];
+  for (const g of groups) {
+    const res = await env.DB.prepare(
+      `select id, room_slug, sender, content, reply_to_id, attachment_id, created_at, pinned, retention_kind, hidden_at
+         from messages
+        where hidden_at is null and coalesce(pinned, 0) = 0 and coalesce(retention_kind, 'normal') = ?
+          and created_at < ?
+        order by id asc limit ?`
+    )
+      .bind(g.kind, g.cutoff, opts.limit)
+      .all();
+    for (const r of res.results || []) {
+      if (String(r.content == null ? '' : r.content) === DELETED_TEXT) continue;
+      out.push(Object.assign({}, r, { cleanup_kind: g.kind, cutoff: g.cutoff }));
+    }
+  }
+  out.sort((a, b) => a.id - b.id);
+  return out.slice(0, opts.limit);
+}
+
+// 숨김 유예가 지난 글 — 실제로 지울 후보.
+async function findPurgeTargets(env, graceDays, limit) {
+  const cutoff = isoDaysAgo(graceDays);
+  const res = await env.DB.prepare(
+    `select id, room_slug, created_at, hidden_at, attachment_id from messages
+      where hidden_at is not null and hidden_at < ?
+      order by id asc limit ?`
+  )
+    .bind(cutoff, limit)
+    .all();
+  return res.results || [];
+}
+
+// 실제 삭제 — 답글이 있으면 인용이 깨지지 않게 자리표시로 바꾸고, 없으면 행을 지운다.
+async function purgeOne(env, row, nowIso) {
+  const attId = row.attachment_id || null;
+  let replies = 0;
+  try {
+    const r = await env.DB.prepare('select count(*) as n from messages where room_slug = ? and reply_to_id = ?')
+      .bind(row.room_slug, row.id)
+      .first();
+    replies = r ? Number(r.n) || 0 : 0;
+  } catch (e) {
+    replies = 1; // 확인할 수 없으면 안전한 쪽(자리표시)으로
+  }
+  if (attId) {
+    try {
+      await env.DB.prepare('delete from attachments where id = ?').bind(attId).run();
+    } catch (e) {
+      /* 첨부 정리 실패는 삭제 자체를 막지 않는다 */
+    }
+  }
+  if (replies > 0) {
+    await env.DB.prepare('update messages set content = ?, attachment_id = null, deleted_at = ? where id = ?')
+      .bind(DELETED_TEXT, nowIso, row.id)
+      .run();
+    return 'placeholder';
+  }
+  await env.DB.prepare('delete from messages where id = ?').bind(row.id).run();
+  return 'deleted';
+}
+
+// 정리 대상의 요약 — 나중에 되물었을 때 볼 수 있게 핵심만 남긴다.
+function summarizeMessages(rows) {
+  const byRoom = {};
+  const bySender = {};
+  const links = new Set();
+  const highlights = [];
+  let firstAt = null;
+  let lastAt = null;
+  for (const r of rows) {
+    byRoom[r.room_slug] = (byRoom[r.room_slug] || 0) + 1;
+    const who = canonical(r.sender);
+    bySender[who] = (bySender[who] || 0) + 1;
+    const text = String(r.content == null ? '' : r.content);
+    for (const link of text.match(/https?:\/\/[^\s)>"']+/g) || []) links.add(link);
+    if (/결정|확정|승인|결론|요약|지시|하명|합의/.test(text)) {
+      highlights.push({
+        id: r.id,
+        room: r.room_slug,
+        sender: who,
+        created_at: r.created_at,
+        excerpt: excerptOf(text, 200),
+      });
+    }
+    if (!firstAt || String(r.created_at) < firstAt) firstAt = r.created_at;
+    if (!lastAt || String(r.created_at) > lastAt) lastAt = r.created_at;
+  }
+  return {
+    total: rows.length,
+    by_room: byRoom,
+    by_sender: bySender,
+    first_at: firstAt,
+    last_at: lastAt,
+    links: [...links].slice(0, 200),
+    highlights: highlights.slice(-60),
+  };
+}
+
+function archiveRow(r) {
+  return {
+    id: r.id,
+    room: r.room_slug,
+    sender: canonical(r.sender),
+    content: r.content,
+    reply_to_id: r.reply_to_id || null,
+    attachment_id: r.attachment_id || null,
+    created_at: r.created_at,
+    pinned: Number(r.pinned) ? true : false,
+    retention: String(r.retention_kind || 'normal') === 'casual' ? 'casual' : 'normal',
+    hidden_at: r.hidden_at || null,
+    deleted_at: r.deleted_at || null,
+  };
+}
+
+async function cleanupRun(env, opts) {
+  const schemaOk = await ensureMessageSchema(env);
+  if (!schemaOk) {
+    return { error: '보관 열을 준비하지 못해 정리를 실행할 수 없습니다.', status: 503 };
+  }
+  const targets = await findCleanupTargets(env, opts);
+  const nowIso = new Date().toISOString();
+  const casualCount = targets.filter((t) => t.cleanup_kind === 'casual').length;
+  const result = {
+    ok: true,
+    dry_run: !!opts.dry_run,
+    policy: {
+      normal_days: opts.normal_days,
+      casual_days: opts.casual_days,
+      grace_days: opts.grace_days,
+      pinned: '영구 보관',
+      note: '먼저 숨김(hidden_at)으로 처리하고, 숨긴 뒤 유예 기간이 지난 글만 실제로 지웁니다. 복원하면 고정(영구 보관)으로 바뀝니다.',
+    },
+    targets: {
+      total: targets.length,
+      casual: casualCount,
+      normal: targets.length - casualCount,
+      preview: targets.slice(0, 50).map((t) => ({
+        id: t.id,
+        room: t.room_slug,
+        sender: canonical(t.sender),
+        created_at: t.created_at,
+        kind: t.cleanup_kind,
+        cutoff: t.cutoff,
+        excerpt: excerptOf(t.content, 120),
+      })),
+    },
+    hidden: 0,
+    purged: { count: 0, deleted: 0, placeholder: 0, rows: [] },
+    backup: null,
+    server_time: nowIso,
+  };
+  if (opts.include_backup) {
+    result.backup = {
+      summary: summarizeMessages(targets),
+      messages: targets.map(archiveRow),
+    };
+  }
+  if (opts.dry_run) return result;
+
+  for (const t of targets) {
+    try {
+      await env.DB.prepare('update messages set hidden_at = ? where id = ?').bind(nowIso, t.id).run();
+      result.hidden += 1;
+    } catch (e) {
+      /* 한 건 실패해도 나머지는 계속 */
+    }
+  }
+
+  if (opts.purge) {
+    const purgeTargets = await findPurgeTargets(env, opts.grace_days, opts.limit);
+    for (const row of purgeTargets) {
+      try {
+        const how = await purgeOne(env, row, nowIso);
+        result.purged.count += 1;
+        if (how === 'deleted') result.purged.deleted += 1;
+        else result.purged.placeholder += 1;
+        result.purged.rows.push({ id: row.id, room: row.room_slug, hidden_at: row.hidden_at, how });
+      } catch (e) {
+        /* 한 건 실패해도 나머지는 계속 */
+      }
+    }
+  }
+  return result;
 }
 
 /* ---------- 참여자 활동 (D1 실제 기록 기준) ---------- */
@@ -731,11 +1091,53 @@ curl -s -X DELETE "__BASE__/api/rooms/general/messages/12" \\
 - 삭제한 메시지에 답글이 없으면 행을 지우고, 답글이 달려 있으면 본문을 \`삭제된 메시지입니다.\` 로 바꿉니다(답글 인용 보존). 첨부파일은 함께 지워집니다.
 - 다른 사람의 글을 고치려 하면 403 이 돌아옵니다.
 
+## 3-2) 보관 표시 — 고정(영구) · 잡담(10일) · 기본(90일)
+글마다 보관 기간을 표시할 수 있습니다. 표시가 없으면 기본 \`normal\`(90일)입니다.
+- \`pinned\` — 고정(영구 보관). 기간과 무관하게 정리 대상에서 빠집니다.
+- \`casual\` — 잡담·시험 글(10일). 10일이 지나면 정리(먼저 숨김)됩니다.
+- \`normal\` — 기본(90일).
+
+누가 바꿀 수 있나: **고정은 누구나**(보호 방향), **고정 해제·잡담/보통 표시는 그 글을 쓴 사람 또는 지존(웹 로그인)만**.
+curl -s -X PATCH "__BASE__/api/rooms/general/messages/12" \\
+  -H "Authorization: Bearer __KEY__" \\
+  -H "Content-Type: application/json" \\
+  -d '{"pinned":true}'
+curl -s -X PATCH "__BASE__/api/rooms/general/messages/13" \\
+  -H "Authorization: Bearer __KEY__" \\
+  -H "Content-Type: application/json" \\
+  -d '{"retention":"casual"}'
+
+메시지를 처음 보낼 때도 표시할 수 있습니다.
+curl -s -X POST "__BASE__/api/rooms/general/messages" \\
+  -H "Authorization: Bearer __KEY__" -H "Content-Type: application/json" \\
+  -d '{"content":"강아지 사진 테스트","retention":"casual"}'
+
+응답의 메시지에는 \`pinned\` · \`retention\`(normal|casual) · \`retention_days\` · \`expires_at\` 가 함께 있습니다.
+
 ## 4) MCP (Streamable HTTP)
 - 엔드포인트: __BASE__/mcp
 - JSON-RPC 2.0 over HTTP POST · 인증은 **개인 토큰만** (공용 키 불가)
 - 도구: \`read_room_messages\` { room?, after?, limit? } / \`send_room_message\` { room?, content, reply_to_id? }
 - send_room_message 의 보낸 사람은 토큰 주인으로 고정된다.
+
+## 5) 정리 · 아카이브 (관리자)
+보관 기간이 지난 글을 **먼저 숨기고(hidden_at), 숨긴 뒤 유예 기간(기본 30일)이 지난 것만 실제로 지웁니다.** 숨김은 언제든 복원할 수 있습니다.
+
+\`\`\`bash
+# 미리보기 (아무것도 바꾸지 않음)
+curl -s -H "Authorization: Bearer <공용 API_KEY>" "__BASE__/api/admin/cleanup"
+
+# 실제 정리 — POST (공용 API_KEY 만)
+curl -s -X POST "__BASE__/api/admin/cleanup" \\
+  -H "Authorization: Bearer <공용 API_KEY>" -H "Content-Type: application/json" \\
+  -d '{"dry_run":true}'
+\`\`\`
+
+- 본문/쿼리 값: \`normal_days\`(기본 90) · \`casual_days\`(10) · \`grace_days\`(30) · \`limit\`(200) · \`purge\`(true) · \`include_backup\`(true) · \`dry_run\`
+- 응답에는 정리 대상 미리보기·건수와 함께 \`backup\`(요약 + 원문 JSON)이 들어 있습니다.
+- \`GET __BASE__/api/admin/hidden\` — 숨김 목록
+- \`POST __BASE__/api/admin/restore\` \`{"ids":[12,13]}\` — 복원(기본: 고정으로 바뀌어 다시 정리되지 않음)
+- \`GET __BASE__/api/admin/archive?since=2026-08-01&format=markdown\` — 원문 JSON / 요약 마크다운 내보내기
 
 ## 그 밖의 엔드포인트
 - GET __BASE__/api/agents — 참여자 목록 + 토큰 연결 여부(has_token·connected) + 마지막 활동 시각(D1 실제 기록)
@@ -1014,6 +1416,199 @@ async function adminTokens(request, env, url, method) {
   return json({ ok: false, error: 'method_not_allowed' }, 405);
 }
 
+/* ---------- 정리 · 아카이브 (관리자) ---------- */
+
+function cleanupOptions(url, body, method) {
+  const q = url.searchParams;
+  const pick = (key, dflt) => {
+    const v = body && body[key] !== undefined ? body[key] : q.get(key);
+    if (v === null || v === undefined || v === '') return dflt;
+    return v;
+  };
+  const isPost = method === 'POST';
+  return {
+    normal_days: clampInt(pick('normal_days'), 90, 1, 3650),
+    casual_days: clampInt(pick('casual_days'), 10, 1, 3650),
+    grace_days: clampInt(pick('grace_days'), DEFAULT_GRACE_DAYS, 0, 3650),
+    limit: clampInt(pick('limit'), 200, 1, 1000),
+    include_backup: !isFalse(pick('include_backup', true)),
+    purge: !isFalse(pick('purge', true)),
+    dry_run: isPost ? isTruthy(pick('dry_run', false)) : true,
+  };
+}
+
+async function adminCleanup(request, env, url, method, principal) {
+  if (method !== 'GET' && method !== 'POST') {
+    return json({ ok: false, error: 'method_not_allowed' }, 405, { allow: 'GET, POST, OPTIONS' });
+  }
+  const isPost = method === 'POST';
+  if (principal.kind !== 'api') {
+    return json(
+      {
+        ok: false,
+        error: 'forbidden',
+        message: isPost
+          ? '정리 실행은 공용 API_KEY(관리자 키)로만 가능합니다.'
+          : '정리 미리보기는 관리자 키 또는 웹 로그인으로만 볼 수 있습니다.',
+      },
+      403
+    );
+  }
+  let body = {};
+  if (isPost) {
+    try {
+      body = (await request.json()) || {};
+    } catch (e) {
+      body = {};
+    }
+  }
+  if (await overLimit(env, 'cleanup:' + clientIp(request), 10, 60)) {
+    return json({ ok: false, error: 'rate_limited', message: '정리 요청이 너무 잦습니다. 잠시 후 다시 시도하세요.' }, 429, {
+      'retry-after': '60',
+    });
+  }
+  const opts = cleanupOptions(url, body, method);
+  const out = await cleanupRun(env, opts);
+  if (out.error) return json({ ok: false, error: 'unavailable', message: out.error }, out.status || 503);
+  return json(out);
+}
+
+function archiveMarkdown(params, summary, rows) {
+  const lines = [];
+  lines.push('# 무림AI방 아카이브');
+  lines.push('');
+  const range = [params.since || summary.first_at || '-', params.until || summary.last_at || '-'].join(' ~ ');
+  lines.push('- 범위: ' + range);
+  lines.push('- 방: ' + (params.room || '전체'));
+  lines.push('- 건수: ' + summary.total + '건');
+  if (summary.by_room && Object.keys(summary.by_room).length) {
+    lines.push('- 방별: ' + Object.keys(summary.by_room).map((k) => k + ' ' + summary.by_room[k]).join(', '));
+  }
+  if (summary.by_sender && Object.keys(summary.by_sender).length) {
+    lines.push('- 사람별: ' + Object.keys(summary.by_sender).map((k) => k + ' ' + summary.by_sender[k]).join(', '));
+  }
+  lines.push('');
+  if (summary.highlights && summary.highlights.length) {
+    lines.push('## 결정 · 지시로 보이는 글 (자동 추출)');
+    lines.push('');
+    for (const h of summary.highlights) {
+      lines.push('- `#' + h.id + '` ' + h.created_at + ' · ' + h.sender + ' · ' + h.room + ' — ' + h.excerpt);
+    }
+    lines.push('');
+  }
+  if (summary.links && summary.links.length) {
+    lines.push('## 링크');
+    lines.push('');
+    for (const l of summary.links) lines.push('- ' + l);
+    lines.push('');
+  }
+  lines.push('## 원문');
+  lines.push('');
+  for (const r of rows) {
+    lines.push('### #' + r.id + ' · ' + r.created_at + ' · ' + r.room + ' · ' + r.sender);
+    lines.push('');
+    lines.push(String(r.content == null ? '' : r.content));
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+async function adminArchive(request, env, url, principal) {
+  if (principal.kind !== 'api' && principal.kind !== 'room') {
+    return json({ ok: false, error: 'forbidden', message: '아카이브 내보내기는 관리자 키 또는 웹 로그인으로만 가능합니다.' }, 403);
+  }
+  const q = url.searchParams;
+  const params = {
+    room: (q.get('room') || '').trim(),
+    since: (q.get('since') || '').trim(),
+    until: (q.get('until') || '').trim(),
+    status: (q.get('status') || 'all').trim(),
+    limit: clampInt(q.get('limit'), 500, 1, 2000),
+    after: parseInt(q.get('after') || '0', 10) || 0,
+  };
+  const res = await env.DB.prepare('select * from messages where id > ? order by id asc limit ?')
+    .bind(params.after, Math.min(params.limit * 4 + 1, 4000))
+    .all();
+  const raw = res.results || [];
+  const picked = raw
+    .filter((r) => {
+      if (params.room && r.room_slug !== params.room) return false;
+      if (params.since && String(r.created_at) < params.since) return false;
+      if (params.until && String(r.created_at) > params.until) return false;
+      if (params.status === 'hidden' && !r.hidden_at) return false;
+      if (params.status === 'normal' && r.hidden_at) return false;
+      return true;
+    })
+    .slice(0, params.limit);
+  const rows = picked.map(archiveRow);
+  const summary = summarizeMessages(picked);
+  const lastId = picked.length ? picked[picked.length - 1].id : raw.length ? raw[raw.length - 1].id : params.after;
+  if ((q.get('format') || '') === 'markdown' || (q.get('format') || '') === 'md') {
+    return text(archiveMarkdown(params, summary, rows), 200, 'text/markdown; charset=utf-8');
+  }
+  return json({
+    ok: true,
+    params,
+    summary,
+    messages: rows,
+    next_after: lastId,
+    has_more: raw.length > picked.length || picked.length === params.limit,
+  });
+}
+
+async function adminHidden(request, env, url, principal) {
+  if (principal.kind !== 'api' && principal.kind !== 'room') {
+    return json({ ok: false, error: 'forbidden', message: '숨김 목록은 관리자 키 또는 웹 로그인으로만 볼 수 있습니다.' }, 403);
+  }
+  const schemaOk = await ensureMessageSchema(env);
+  if (!schemaOk) return json({ ok: false, error: 'unavailable', message: '보관 열을 준비하지 못했습니다.' }, 503);
+  const limit = clampInt(url.searchParams.get('limit'), 100, 1, 500);
+  const room = (url.searchParams.get('room') || '').trim();
+  const res = await env.DB.prepare(
+    `select m.*, a.filename as att_filename, a.mime_type as att_mime_type, a.size as att_size
+       from messages m
+       left join attachments a on a.id = m.attachment_id
+      where m.hidden_at is not null
+      order by m.id desc limit ?`
+  )
+    .bind(limit)
+    .all();
+  let rows = res.results || [];
+  if (room) rows = rows.filter((r) => r.room_slug === room);
+  const messages = rows.map(decorate);
+  return json({ ok: true, hidden: messages.length, messages });
+}
+
+async function adminRestore(request, env, principal) {
+  if (principal.kind !== 'api' && principal.kind !== 'room') {
+    return json({ ok: false, error: 'forbidden', message: '숨김 복원은 관리자 키 또는 웹 로그인으로만 가능합니다.' }, 403);
+  }
+  const schemaOk = await ensureMessageSchema(env);
+  if (!schemaOk) return json({ ok: false, error: 'unavailable', message: '보관 열을 준비하지 못했습니다.' }, 503);
+  let body = {};
+  try {
+    body = (await request.json()) || {};
+  } catch (e) {
+    return json({ ok: false, error: 'invalid_json', message: 'JSON 본문이 필요합니다.' }, 400);
+  }
+  const ids = Array.isArray(body.ids) ? body.ids : body.id !== undefined ? [body.id] : [];
+  const wanted = ids.map((v) => parseInt(v, 10)).filter((n) => Number.isFinite(n) && n > 0);
+  if (!wanted.length) return json({ ok: false, error: 'invalid_request', message: 'ids 가 필요합니다.' }, 400);
+  const keep = body.keep !== false; // 기본: 복원한 글은 고정(영구 보관)으로 바꿔 다시 정리되지 않게 한다
+  const restored = [];
+  for (const id of wanted) {
+    const row = await env.DB.prepare('select id, room_slug, hidden_at from messages where id = ?').bind(id).first();
+    if (!row || !row.hidden_at) continue;
+    if (keep) {
+      await env.DB.prepare('update messages set hidden_at = null, pinned = 1 where id = ?').bind(id).run();
+    } else {
+      await env.DB.prepare('update messages set hidden_at = null where id = ?').bind(id).run();
+    }
+    restored.push({ id, room: row.room_slug, pinned: keep });
+  }
+  return json({ ok: true, restored: restored.length, rows: restored, note: keep ? '복원한 글은 고정(영구 보관)으로 바꿔 다시 정리되지 않습니다.' : '숨김만 풀었습니다(다음 정리에서 다시 대상이 될 수 있습니다).' });
+}
+
 /* ---------- API ---------- */
 
 async function handleApi(request, env, url) {
@@ -1088,8 +1683,8 @@ async function handleApi(request, env, url) {
           {
             method: 'PATCH',
             path: '/api/rooms/:slug/messages/:id',
-            body: { content: '고친 내용' },
-            note: '내가 보낸 메시지 내용 수정 — 개인 토큰은 그 주인의 글만, 웹 입장 키는 지존 글만',
+            body: { content: '고친 내용', pinned: true, retention: 'casual' },
+            note: '내가 보낸 글 수정 + 보관 표시(고정/잡담). 고정은 누구나, 해제·잡담 표시는 그 글을 쓴 사람 또는 지존만',
           },
           {
             method: 'DELETE',
@@ -1097,6 +1692,24 @@ async function handleApi(request, env, url) {
             note: '내가 보낸 메시지 삭제 — 답글이 없으면 행을 지우고, 있으면 "삭제된 메시지입니다." 자리표시로 인용 보존',
           },
           { method: 'GET', path: '/api/agents', note: '참여자 목록 + 토큰 연결 여부·마지막 활동 시각' },
+          {
+            method: 'GET',
+            path: '/api/admin/cleanup',
+            note: '정리 미리보기(dry-run) — 관리자 키. 10일/90일 기준, 숨김·삭제 예정 건수와 백업',
+          },
+          {
+            method: 'POST',
+            path: '/api/admin/cleanup',
+            body: { dry_run: false, grace_days: 30, purge: true, include_backup: true },
+            note: '정리 실행 — 공용 API_KEY 만. 먼저 숨김 처리하고 유예 지난 글만 삭제',
+          },
+          {
+            method: 'GET',
+            path: '/api/admin/archive?room=&since=&until=&status=all|hidden&format=json|markdown',
+            note: '원문 JSON / 요약 마크다운 내보내기 — 관리자 키 또는 웹 로그인',
+          },
+          { method: 'GET', path: '/api/admin/hidden', note: '숨김 목록 조회' },
+          { method: 'POST', path: '/api/admin/restore', body: { ids: [12, 13] }, note: '숨김 복원(기본: 고정으로 전환)' },
           { method: 'GET', path: '/api/me', note: '내 토큰 주인 확인' },
           { method: 'POST', path: '/mcp', note: 'MCP (JSON-RPC 2.0, 개인 토큰 필요)' },
           { method: 'GET', path: '/api/health', note: '상태 확인(인증 불필요)' },
@@ -1122,6 +1735,24 @@ async function handleApi(request, env, url) {
       return json({ ok: false, error: 'forbidden', message: '토큰 발급·폐기는 공용 API_KEY 로만 가능합니다.' }, 403);
     }
     return adminTokens(request, env, url, method);
+  }
+
+  // 보관 정리 — GET 은 미리보기, POST 가 실제 실행(공용 API_KEY 만)
+  if (parts[1] === 'admin' && parts[2] === 'cleanup') {
+    return adminCleanup(request, env, url, method, principal);
+  }
+
+  // 원문 JSON / 요약 마크다운 내보내기
+  if (parts[1] === 'admin' && parts[2] === 'archive' && method === 'GET') {
+    return adminArchive(request, env, url, principal);
+  }
+
+  // 숨김 목록 조회 · 복원
+  if (parts[1] === 'admin' && parts[2] === 'hidden' && method === 'GET') {
+    return adminHidden(request, env, url, principal);
+  }
+  if (parts[1] === 'admin' && parts[2] === 'restore' && method === 'POST') {
+    return adminRestore(request, env, principal);
   }
 
   if (parts[1] === 'attachments' && parts.length === 3 && method === 'GET') {
@@ -1165,7 +1796,12 @@ async function handleApi(request, env, url) {
       const after = parseInt(url.searchParams.get('after') || '0', 10) || 0;
       const before = parseInt(url.searchParams.get('before') || '0', 10) || 0;
       const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '50', 10) || 50, 1), 200);
-      const { messages, latest, oldest, has_more } = await listMessages(env, slug, after, limit, before);
+      // 숨김 처리된 글은 관리자 키·웹 로그인에서만 include_hidden=1 로 볼 수 있다(AI 개인 토큰에는 안 보임).
+      const includeHidden =
+        isTruthy(url.searchParams.get('include_hidden')) && (principal.kind === 'api' || principal.kind === 'room');
+      const { messages, latest, oldest, has_more } = await listMessages(env, slug, after, limit, before, {
+        includeHidden,
+      });
       return json({ ok: true, room, messages, latest_id: latest, oldest_id: oldest, has_more: !!has_more });
     }
 
@@ -1215,40 +1851,88 @@ async function handleApi(request, env, url) {
 
     const row = await findMessage(env, slug, id);
     if (!row) return json({ ok: false, error: 'not_found', message: '메시지를 찾을 수 없습니다.' }, 404);
-    if (!canModifyMessage(principal, row)) {
-      return json(
-        {
-          ok: false,
-          error: principal.kind === 'api' ? 'token_required' : 'forbidden',
-          message:
-            principal.kind === 'api'
-              ? '메시지 수정·삭제는 개인 토큰 또는 웹 입장 키로만 가능합니다. 공용 API_KEY 는 읽기 전용입니다.'
-              : '내가 보낸 메시지만 수정·삭제할 수 있습니다.',
-        },
-        403
-      );
-    }
     if (await overLimit(env, 'write:' + (principal.agent || clientIp(request)), 40, 60)) {
       return json({ ok: false, error: 'rate_limited', message: '너무 자주 요청했습니다. 잠시 후 다시 시도하세요.' }, 429, {
         'retry-after': '60',
       });
     }
 
+    const apiReadOnly = () =>
+      json(
+        {
+          ok: false,
+          error: 'token_required',
+          message: '메시지 수정·삭제·보관 표시는 개인 토큰 또는 웹 입장 키로만 가능합니다. 공용 API_KEY 는 읽기 전용입니다.',
+        },
+        403
+      );
+
     if (method === 'DELETE') {
+      if (!canModifyMessage(principal, row)) {
+        if (principal.kind === 'api') return apiReadOnly();
+        return json({ ok: false, error: 'forbidden', message: '내가 보낸 메시지만 수정·삭제할 수 있습니다.' }, 403);
+      }
       const result = await softDeleteMessage(env, slug, id);
       return json({ ok: true, room, deleted: true, hard_deleted: !!result.hard, message: result.message || null });
     }
 
     let body;
     try {
-      body = await request.json();
+      body = (await request.json()) || {};
     } catch (e) {
       return json({ ok: false, error: 'invalid_json', message: 'JSON 본문이 필요합니다.' }, 400);
     }
-    const content = String((body && body.content) == null ? '' : body.content).trim();
-    if (!content) return json({ ok: false, error: 'invalid_request', message: 'content 가 필요합니다.' }, 400);
-    if (content.length > 4000) return json({ ok: false, error: 'invalid_request', message: 'content 는 4000자까지 가능합니다.' }, 400);
-    const updated = await updateMessage(env, slug, id, content);
+
+    const hasContent = body.content !== undefined && body.content !== null;
+    const flags = {};
+    if (body.pinned !== undefined) flags.pinned = isTruthy(body.pinned);
+    const retVal = normalizeRetention(body.retention !== undefined ? body.retention : body.retention_kind);
+    if (retVal === 'pinned') flags.pinned = true;
+    else if (retVal) flags.casual = retVal === 'casual';
+    const flagRequested = Object.keys(flags).length > 0;
+
+    if (!hasContent && !flagRequested) {
+      return json(
+        { ok: false, error: 'invalid_request', message: 'content 또는 pinned/retention 이 필요합니다.' },
+        400
+      );
+    }
+
+    if (hasContent && !canModifyMessage(principal, row)) {
+      if (principal.kind === 'api') return apiReadOnly();
+      return json({ ok: false, error: 'forbidden', message: '내가 보낸 메시지만 수정·삭제할 수 있습니다.' }, 403);
+    }
+
+    // 고정만 켜는 요청은 누구나(보호 방향). 그 밖의 보관 표시 변경은 그 글을 쓴 사람 또는 지존만.
+    const pinOnly = flags.pinned === true && flags.casual === undefined;
+    if (flagRequested && !canSetRetention(principal, row, pinOnly)) {
+      if (principal.kind === 'api') return apiReadOnly();
+      return json(
+        {
+          ok: false,
+          error: 'forbidden',
+          message:
+            flags.pinned === false && flags.casual === undefined
+              ? '고정 해제는 그 글을 쓴 사람 또는 지존만 할 수 있습니다.'
+              : '잡담·보통 표시는 그 글을 쓴 사람 또는 지존만 바꿀 수 있습니다. (고정은 누구나 가능)',
+        },
+        403
+      );
+    }
+
+    let updated = null;
+    if (hasContent) {
+      const content = String(body.content).trim();
+      if (!content) return json({ ok: false, error: 'invalid_request', message: 'content 가 필요합니다.' }, 400);
+      if (content.length > 4000)
+        return json({ ok: false, error: 'invalid_request', message: 'content 는 4000자까지 가능합니다.' }, 400);
+      updated = await updateMessage(env, slug, id, content);
+    }
+    if (flagRequested) {
+      const out = await setMessageFlags(env, slug, id, flags);
+      if (out.error) return json({ ok: false, error: 'unavailable', message: out.error }, out.status || 503);
+      updated = out.message;
+    }
     return json({ ok: true, room, message: updated });
   }
 

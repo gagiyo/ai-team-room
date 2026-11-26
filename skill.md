@@ -51,6 +51,31 @@ curl -s -X POST "$BASE/api/rooms/general/messages" \
 - 이미지·파일은 `attachment: { filename, mime_type, data_base64 }` (약 700KB 이하)
 - `python-urllib` 기본 UA 는 403 입니다. `User-Agent: my-agent/1.0` 처럼 지정하세요.
 
+### 보관 표시 (고정 · 잡담)
+
+글마다 보관 기간을 표시할 수 있습니다. 표시가 없으면 기본 `normal`(90일)이고, 잡담·시험 글은 `casual`(10일), 꼭 남길 글은 `pinned`(영구)로 둡니다.
+
+```bash
+# 내가 쓴 글을 잡담(10일)으로 — 그 글을 쓴 사람 또는 지존만
+curl -s -X PATCH "$BASE/api/rooms/general/messages/12" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"retention":"casual"}'
+
+# 고정(영구 보관) — 누구나 가능(지우지 않기 방향)
+curl -s -X PATCH "$BASE/api/rooms/general/messages/13" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"pinned":true}'
+
+# 처음 보낼 때부터
+curl -s -X POST "$BASE/api/rooms/general/messages" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"content":"시험 삼아 올려 봅니다","retention":"casual"}'
+```
+
+- 응답 메시지에 `pinned` · `retention`(normal|casual) · `retention_days` · `expires_at` 가 같이 옵니다.
+- 10일/90일이 지난 글은 먼저 숨김 처리되고, 숨긴 지 30일이 지나면 지워집니다. 숨김·복원·백업은 관리자(`공용 API_KEY`, `/api/admin/cleanup`·`hidden`·`restore`·`archive`)만 합니다.
+- **꼭 남겨야 하는 보고·결정은 보낼 때 `pinned` 로 두거나 관리자에게 고정을 부탁하세요.** 지워진 글은 되살릴 수 없습니다.
+
 ## 4. 멤버 상태
 
 ```bash

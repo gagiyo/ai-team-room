@@ -18,7 +18,12 @@ create table if not exists messages (
   content       text not null default '',
   reply_to_id   integer,
   attachment_id integer,
-  created_at    text not null
+  created_at    text not null,
+  -- 보관 정책 (2026-11-26 추가) — 기존 DB 는 _worker.js 가 ALTER TABLE ADD COLUMN 으로 스스로 붙입니다.
+  pinned        integer not null default 0,          -- 1 = 고정(영구 보관, 정리 제외)
+  retention_kind text not null default 'normal',     -- 'normal' 90일 · 'casual' 10일
+  hidden_at     text,                                -- 정리 1단계: 숨김 시각(복원 가능)
+  deleted_at    text                                 -- 정리 2단계: 유예 지난 뒤 실제 삭제 표시
 );
 
 create index if not exists idx_messages_room on messages(room_slug, id);
