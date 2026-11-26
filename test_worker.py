@@ -97,11 +97,13 @@ function makeEnv(){
         }
         if (s.indexOf('from rooms r') !== -1)
           return Promise.resolve({results: db.rooms.map(function(r){ return {slug:r.slug, name:r.name, description:r.description, position:r.position, message_count: db.messages.filter(function(m){return m.room_slug===r.slug;}).length, last_id: 0, last_message_at: null}; })});
+        if (s.indexOf('where m.room_slug = ? and m.id < ?') !== -1)
+          return Promise.resolve({results: db.messages.filter(function(m){return m.room_slug===params[0] && m.id<params[1];}).sort(function(a,b){return b.id-a.id;}).slice(0, params[2] || 50)});
         if (s.indexOf('where m.room_slug = ? and m.id > ?') !== -1)
           return Promise.resolve({results: db.messages.filter(function(m){return m.room_slug===params[0] && m.id>params[1];}).sort(function(a,b){return a.id-b.id;}).slice(0, params[2] || 50)});
         if (s.indexOf('where m.room_slug = ? order by m.id desc') !== -1)
           return Promise.resolve({results: db.messages.filter(function(m){return m.room_slug===params[0];}).sort(function(a,b){return b.id-a.id;}).slice(0, params[1] || 50)});
-        if (s.indexOf('from messages where room_slug = ? and id in') === 0)
+        if (s.indexOf('from messages where room_slug = ? and id in') !== -1)
           return Promise.resolve({results: db.messages.filter(function(m){return m.room_slug===params[0] && params.slice(1).indexOf(m.id)!==-1;})});
         if (s.indexOf('select id, agent, label, created_at') === 0)
           return Promise.resolve({results: db.tokens});
@@ -129,6 +131,16 @@ function makeEnv(){
         }
         if (s.indexOf('update agent_tokens set last_used_at') === 0) return Promise.resolve({meta:{}});
         if (s.indexOf('update agent_tokens set revoked') === 0) return Promise.resolve({meta:{}});
+        if (s.indexOf('update messages set content') === 0) {
+          var id2 = params[params.length - 1];
+          var t = db.messages.filter(function(m){ return m.id === id2; })[0];
+          if (t) {
+            t.content = params[0];
+            if (s.indexOf('attachment_id = null') !== -1) t.attachment_id = null;
+          }
+          return Promise.resolve({meta:{}});
+        }
+        if (s.indexOf('delete from attachments') === 0) return Promise.resolve({meta:{}});
         if (s.indexOf('delete from rate_limits') === 0) return Promise.resolve({meta:{}});
         return Promise.resolve({meta:{}});
       }
@@ -282,6 +294,90 @@ TESTS = r"""
   ok('same key web POST 201', r.status === 201, r.status);
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer same-key'}, body:{sender:'지존', content:'같은 키 스크립트 발송'}}), env2);
   ok('same key bearer POST 403', r.status === 403, r.status);
+
+  /* ---------- 2026-11-26: 지난 대화 더 보기(?before=) ---------- */
+  for (var p=0;p<5;p++){
+    await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer ' + selboyToken}, body:{sender:'외문집사', content:'페이지 테스트 ' + p}}), env);
+  }
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages?limit=3', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
+  var page1 = JSON.parse(r.body);
+  ok('list limit=3 has_more', r.status===200 && page1.messages.length===3 && page1.has_more===true,
+     JSON.stringify({n:(page1.messages||[]).length, more:page1.has_more, ids:(page1.messages||[]).map(function(m){return m.id;})}));
+  var oldest1 = page1.messages[0].id;
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages?before=' + oldest1 + '&limit=2', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
+  var page2 = JSON.parse(r.body);
+  var beforeOk = r.status===200 && page2.ok === true && page2.messages.length > 0;
+  for (var q=0;q<(page2.messages||[]).length;q++){ if (page2.messages[q].id >= oldest1) beforeOk = false; }
+  var ascOk = true;
+  for (var q2=1;q2<(page2.messages||[]).length;q2++){ if (page2.messages[q2].id <= page2.messages[q2-1].id) ascOk = false; }
+  ok('before older page', beforeOk && ascOk && page2.has_more === true,
+     JSON.stringify({ids:(page2.messages||[]).map(function(m){return m.id;}), more:page2.has_more}));
+  // 가장 앞까지 거슬러 올라가면 has_more=false
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages?before=1&limit=5', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
+  ok('before first has_more false', JSON.parse(r.body).has_more === false, r.body.slice(0,120));
+
+  /* ---------- 2026-11-26: 메시지 수정(PATCH) ---------- */
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer ' + selboyToken}, body:{content:'고치기 전 글'}}), env);
+  var myMsg = JSON.parse(r.body).message;
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + myMsg.id, {method:'PATCH', headers:{authorization:'Bearer ' + selboyToken}, body:{content:'고친 글'}}), env);
+  var patched = JSON.parse(r.body);
+  ok('PATCH own message', r.status===200 && patched.ok===true && patched.message.content==='고친 글' && patched.message.id===myMsg.id, r.status + ' ' + r.body.slice(0,140));
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages?after=' + (myMsg.id-1) + '&limit=5', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
+  var afterList = JSON.parse(r.body).messages || [];
+  var saved = afterList.filter(function(m){ return m.id === myMsg.id; })[0];
+  ok('PATCH persisted', !!saved && saved.content === '고친 글', saved ? saved.content : 'missing');
+
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + myMsg.id, {method:'PATCH', headers:{authorization:'Bearer ' + pallyToken}, body:{content:'남의 글 고치기'}}), env);
+  ok('PATCH other 403', r.status === 403 && JSON.parse(r.body).error === 'forbidden', r.status + ' ' + r.body.slice(0,120));
+
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + myMsg.id, {method:'PATCH', headers:{authorization:'Bearer legacy-shared-key'}, body:{content:'공용 키 수정'}}), env);
+  ok('PATCH api_key 403', r.status === 403 && JSON.parse(r.body).error === 'token_required', r.status + ' ' + r.body.slice(0,120));
+
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + myMsg.id, {method:'PATCH', headers:{authorization:'Bearer ' + selboyToken}, body:{content:'   '}}), env);
+  ok('PATCH empty 400', r.status === 400, r.status);
+
+  /* ---------- 2026-11-26: 웹 입장 키 = 지존 글만 ---------- */
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {method:'POST', headers:{'x-room-key':'room-pass'}, body:{sender:'지존', content:'지존이 웹에서 쓴 글'}}), env);
+  var humanMsg = JSON.parse(r.body).message;
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + humanMsg.id, {method:'PATCH', headers:{'x-room-key':'room-pass'}, body:{content:'지존이 고친 글'}}), env);
+  ok('room_key PATCH human', r.status===200 && JSON.parse(r.body).message.content === '지존이 고친 글', r.status + ' ' + r.body.slice(0,120));
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + myMsg.id, {method:'PATCH', headers:{'x-room-key':'room-pass'}, body:{content:'남의 글'}}), env);
+  ok('room_key PATCH other 403', r.status === 403, r.status);
+
+  /* ---------- 2026-11-26: 메시지 삭제(DELETE) · 답글 인용 보존 ---------- */
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer ' + selboyToken}, body:{content:'삭제될 원글'}}), env);
+  var parentMsg = JSON.parse(r.body).message;
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer ' + pallyToken}, body:{content:'원글에 단 답글', reply_to_id: parentMsg.id}}), env);
+  var replyMsg = JSON.parse(r.body).message;
+  ok('reply quotes parent', !!replyMsg.reply_to && replyMsg.reply_to.content === '삭제될 원글', JSON.stringify(replyMsg.reply_to));
+
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + parentMsg.id, {method:'DELETE', headers:{authorization:'Bearer ' + selboyToken}}), env);
+  var del = JSON.parse(r.body);
+  ok('DELETE own message', r.status===200 && del.ok===true && del.deleted===true && del.message.content === '삭제된 메시지입니다.' && del.message.deleted === true, r.status + ' ' + r.body.slice(0,160));
+
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages?after=' + (parentMsg.id-1) + '&limit=5', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
+  var afterDel = JSON.parse(r.body).messages || [];
+  var goneParent = afterDel.filter(function(m){ return m.id === parentMsg.id; })[0];
+  var keepReply = afterDel.filter(function(m){ return m.id === replyMsg.id; })[0];
+  ok('DELETE keeps row as placeholder', !!goneParent && goneParent.content === '삭제된 메시지입니다.' && goneParent.deleted === true, goneParent ? goneParent.content : 'missing');
+  ok('reply quote not broken', !!keepReply && !!keepReply.reply_to && keepReply.reply_to.content === '삭제된 메시지입니다.', keepReply ? JSON.stringify(keepReply.reply_to) : 'missing');
+
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + myMsg.id, {method:'DELETE', headers:{authorization:'Bearer ' + pallyToken}}), env);
+  ok('DELETE other 403', r.status === 403, r.status);
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/999999', {method:'DELETE', headers:{authorization:'Bearer ' + selboyToken}}), env);
+  ok('DELETE missing 404', r.status === 404, r.status);
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/abc', {method:'DELETE', headers:{authorization:'Bearer ' + selboyToken}}), env);
+  ok('DELETE bad id 400', r.status === 400, r.status);
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/nope/messages/' + myMsg.id, {method:'DELETE', headers:{authorization:'Bearer ' + selboyToken}}), env);
+  ok('DELETE wrong room 404', r.status === 404, r.status);
+
+  /* ---------- 2026-11-26: 그 밖의 확인 ---------- */
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + myMsg.id, {method:'GET', headers:{authorization:'Bearer legacy-shared-key'}}), env);
+  ok('GET item 405', r.status === 405, r.status);
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/health', {method:'OPTIONS'}), env);
+  ok('CORS allows PATCH', (r.headers['Access-Control-Allow-Methods']||'').indexOf('PATCH') !== -1, r.headers['Access-Control-Allow-Methods']);
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages?limit=1', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
+  ok('list returns oldest_id', JSON.parse(r.body).oldest_id > 0, r.body.slice(0,120));
 
   globalThis.__out = out;
 })().catch(function(e){ globalThis.__out = [{name:'EXCEPTION', ok:false, extra:String((e && e.stack) || e)}]; });
