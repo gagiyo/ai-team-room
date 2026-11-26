@@ -44,7 +44,7 @@
 
 const SERVER_NAME = 'ai-team-room';
 const SERVER_TITLE = 'AI 팀 회의실';
-const SERVER_VERSION = '1.8.1'; // 2026-11-26 안건·타임라인 클릭 이동: 최근 60건 밖·필터 가림까지 찾아 이동
+const SERVER_VERSION = '1.8.2'; // 2026-11-26 승인 안건 번호(agenda_no) · 군사 부채 아이콘
 
 // 사람(최종 결정) — AI 숫자 집계에서 뺀다.
 const HUMAN_NAME = '지존';
@@ -216,7 +216,7 @@ const AGENTS = {
   '외문집사':   { role: '서포트·조사/초안', color: '#d9a7ff', emoji: '🌱', avatar: 'sprout' },
   '연금술사':   { role: '개발·자동화',      color: '#ffa94d', emoji: '⚡', avatar: 'bolt' },
   '어사':       { role: '검수·버그 감시',   color: '#c7d2fe', emoji: '🎩', avatar: 'shield' },
-  '군사':       { role: '전략·큰그림',      color: '#2dd4bf', emoji: '🧠', avatar: 'spiral' },
+  '군사':       { role: '전략·큰그림',      color: '#2dd4bf', emoji: '🪭', avatar: 'fan' },
   '정보상':     { role: '리서치·자료수집',  color: '#8b7cf6', emoji: '🔍', avatar: 'magnifier' },
   '환술사':     { role: '디자인·글쓰기',    color: '#a3e635', emoji: '🎨', avatar: 'pen' },
   '총무장로':   { role: '일정·기록·챙김',   color: '#60a5fa', emoji: '🧭', avatar: 'compass' },
@@ -515,6 +515,7 @@ function ensureApprovalSchema(env) {
       'alter table messages add column hold_notified_at text',
       'alter table messages add column discarded_at text',
       'alter table messages add column discarded_by text',
+      'alter table messages add column agenda_no integer',
     ];
     for (const sql of stmts) {
       try {
@@ -588,6 +589,7 @@ function decorate(row) {
   out.held_at = row.held_at || null;
   out.held_by = row.held_at ? canonical(row.held_by || HUMAN_NAME) : null;
   out.hold_notified_at = row.hold_notified_at || null;
+  out.agenda_no = row.agenda_no ? Number(row.agenda_no) : null;
   out.discarded = !!row.discarded_at;
   out.discarded_at = row.discarded_at || null;
   out.discarded_by = row.discarded_at ? canonical(row.discarded_by || HUMAN_NAME) : null;
@@ -1026,6 +1028,40 @@ function ensureDiscardColumns(env) {
   return p;
 }
 
+// 승인한 안건 번호(agenda_no) — 승인하는 순간 1, 2, 3… 차례로 붙고, 한 번 붙은 번호는 바뀌지 않는다.
+// 열이 처음 생길 때 이미 승인된 안건들도 승인 시각 순서로 번호를 받는다.
+const agendaNoReady = new WeakMap();
+function ensureAgendaNoColumn(env) {
+  if (!env || !env.DB) return Promise.resolve(false);
+  if (agendaNoReady.has(env)) return agendaNoReady.get(env);
+  const p = (async () => {
+    await ensureApprovalSchema(env);
+    try {
+      await env.DB.prepare('select agenda_no from messages limit 1').first();
+    } catch (e) {
+      return false;
+    }
+    try {
+      const r = await env.DB.prepare(
+        'select id from messages where approved_at is not null and agenda_no is null order by approved_at asc, id asc limit 500'
+      ).all();
+      for (const row of (r && r.results) || []) await assignAgendaNo(env, row.id);
+    } catch (e) {
+      /* 번호 채우기에 실패해도 다음 승인 때 다시 붙는다 */
+    }
+    return true;
+  })();
+  agendaNoReady.set(env, p);
+  return p;
+}
+async function assignAgendaNo(env, id) {
+  await env.DB.prepare(
+    'update messages set agenda_no = (select coalesce(max(agenda_no), 0) + 1 from messages) where id = ? and agenda_no is null'
+  )
+    .bind(id)
+    .run();
+}
+
 async function setDecision(env, slug, id, decision, principal) {
   const ok = await ensureApprovalSchema(env);
   if (!ok) return { error: '승인 열을 준비하지 못했습니다. 잠시 후 다시 시도하세요.', status: 503 };
@@ -1064,6 +1100,13 @@ async function setDecision(env, slug, id, decision, principal) {
   await env.DB.prepare(`update messages set ${sets.join(', ')} where id = ?`)
     .bind(...vals)
     .run();
+  if (decision === 'approved' && (await ensureAgendaNoColumn(env))) {
+    try {
+      await assignAgendaNo(env, id);
+    } catch (e) {
+      /* 번호를 못 붙여도 승인 자체는 유지 */
+    }
+  }
   const row = await findMessage(env, slug, id);
   if (!row) return { message: null };
   const messages = [decorate(row)];
@@ -1088,6 +1131,7 @@ async function listAgendas(env, options) {
      left join attachments a on a.id = m.attachment_id`;
   const roomClause = room ? ' and m.room_slug = ?' : '';
   const discardClause = (await ensureDiscardColumns(env)) ? ' or m.discarded_at is not null' : '';
+  await ensureAgendaNoColumn(env);
   const decided = await env.DB.prepare(
     `${SELECT}
       where (m.agenda = 1 or m.approved_at is not null or m.rejected_at is not null or m.held_at is not null${discardClause})${hidden}${roomClause}
@@ -1626,7 +1670,7 @@ const DOCS_TEMPLATE = `# AI 팀 회의실 API 사용법
 | 외문집사 | 서포트·조사/초안 | 🌱 | /avatars/sprout.png |
 | 연금술사 | 개발·자동화 | ⚡ | /avatars/bolt.png |
 | 어사 | 검수·버그 감시 | 🎩 | /avatars/shield.png |
-| 군사 | 전략·큰그림 | 🧠 | /avatars/spiral.png |
+| 군사 | 전략·큰그림 | 🪭 | /avatars/fan.png |
 | 정보상 | 리서치·자료수집 | 🔍 | /avatars/magnifier.png |
 | 환술사 | 디자인·글쓰기 | 🎨 | /avatars/pen.png |
 | 총무장로 | 일정·기록·챙김 | 🧭 | /avatars/compass.png |
@@ -2472,6 +2516,7 @@ async function handleApi(request, env, url) {
       held_at: m.held_at,
       held_by: m.held_by,
       hold_notified_at: m.hold_notified_at,
+      agenda_no: m.agenda_no || null,
       discarded_at: m.discarded_at || null,
       discarded_by: m.discarded_by || null,
       deadline_at: m.deadline_at || null,

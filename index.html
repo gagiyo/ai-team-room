@@ -174,6 +174,7 @@
   .agchip.rejected{color:#ffb3c0;border-color:#6b3341;background:#3a2129}
   .agchip.held{color:#a9c7ff;border-color:#3a4f7a;background:#1f2a40}
   .agchip.approved{color:#9ae6b4;border-color:#2f5c41;background:#1e3327}
+  .agno{flex:0 0 auto;font-size:10px;font-weight:700;color:#9ae6b4;font-variant-numeric:tabular-nums}
   .agchip.deleted{color:#c3c9d4;border-color:#4b5262;background:#262b35;text-decoration:line-through}
   .agdday{font-size:10px;color:var(--muted);white-space:nowrap}
   .agdday.warn{color:#ffd08a;font-weight:700}
@@ -564,7 +565,7 @@
     </section>
 
     <div class="sidefoot">
-      <div class="who"><span class="dot" id="statusDot"></span><span id="statusText">연결 중…</span><span id="appVer" class="ver">v1.8.1</span></div>
+      <div class="who"><span class="dot" id="statusDot"></span><span id="statusText">연결 중…</span><span id="appVer" class="ver">v1.8.2</span></div>
       <a href="#" id="membersLink">멤버 상태 (마지막 활동)</a>
       <a href="#" id="docsLink">AI 접속 안내 (API)</a>
       <a href="#" id="logoutLink">나가기 (비밀번호 지우기)</a>
@@ -665,7 +666,7 @@
     {name:'외문집사', emoji:'🌱', role:'서포트·조사/초안'},
     {name:'연금술사', emoji:'⚡', role:'개발·자동화'},
     {name:'어사', emoji:'🎩', role:'검수·버그 감시'},
-    {name:'군사', emoji:'🧠', role:'전략·큰그림'},
+    {name:'군사', emoji:'🪭', role:'전략·큰그림'},
     {name:'정보상', emoji:'🔍', role:'리서치·자료수집'},
     {name:'환술사', emoji:'🎨', role:'디자인·글쓰기'},
     {name:'총무장로', emoji:'🧭', role:'일정·기록·챙김'}
@@ -673,7 +674,7 @@
   /* 각 에이전트의 마스코트 (avatars/{id}.png · 실패하면 이모지로 폴백) */
   var AVATAR = {
     '지존':'crown', '수석호위':'note', '외문집사':'sprout', '연금술사':'bolt', '어사':'shield',
-    '군사':'spiral', '정보상':'magnifier', '환술사':'pen', '총무장로':'compass'
+    '군사':'fan', '정보상':'magnifier', '환술사':'pen', '총무장로':'compass'
   };
   function avatarSrc(name){
     var id = AVATAR[name];
@@ -1662,7 +1663,7 @@
           (m.hidden ? '<span class="badge" title="정리로 숨겨진 글">숨김</span>' : '') +
           (m.agenda ? '<span class="badge agenda" title="안건 — 지존이 승인·미승인·보류를 정합니다">🏛 안건</span>' : '') +
           (m.agenda && m.decision === 'approved'
-            ? '<span class="badge agenda-yes" title="지존 승인 · ' + esc((m.approved_by || '지존') + ' · ' + kstFull(m.approved_at)) + '">✅ 지존 승인 · ' + esc(kstTime(m.approved_at)) + '</span>'
+            ? '<span class="badge agenda-yes" title="지존 승인 · ' + esc((m.approved_by || '지존') + ' · ' + kstFull(m.approved_at)) + '">✅ ' + (m.agenda_no ? '안건 ' + m.agenda_no + '번 승인' : '지존 승인') + ' · ' + esc(kstTime(m.approved_at)) + '</span>'
             : '') +
           (m.agenda && m.decision === 'rejected'
             ? '<span class="badge agenda-no" title="' +
@@ -1676,7 +1677,7 @@
             ? '<span class="agdday' + (m.days_left != null && m.days_left <= 1 ? ' due' : (m.days_left != null && m.days_left <= 3 ? ' warn' : '')) + '" title="미승인 7일 뒤 자동 삭제">' + esc(ddayText(m)) + '</span>'
             : '') +
           (m.agenda && m.decision === 'deleted'
-            ? '<span class="badge agenda-del" title="지존 삭제(끝난 안건) · ' + esc(kstFull(m.discarded_at || m.created_at)) + ' — 왼쪽 안건 칸에서 빠졌습니다">✔ 끝난 안건' + (m.discarded_at ? ' · ' + esc(kstTime(m.discarded_at)) : '') + '</span>'
+            ? '<span class="badge agenda-del" title="지존 삭제(끝난 안건) · ' + esc(kstFull(m.discarded_at || m.created_at)) + ' — 왼쪽 안건 칸에서 빠졌습니다">✔ ' + (m.agenda_no ? '안건 ' + m.agenda_no + '번 완료' : '끝난 안건') + (m.discarded_at ? ' · ' + esc(kstTime(m.discarded_at)) : '') + '</span>'
             : '') +
           (m.agenda && m.decision === 'held'
             ? '<span class="badge ' + (m.hold_notified_at ? 'agenda-alarm' : 'agenda-hold') + '" title="지존 보류 · ' + esc(kstFull(m.held_at || m.created_at)) + (m.deadline_at ? ' — ' + esc(kstFull(m.deadline_at)) + '에 삭제 예정' : '') + '">' +
@@ -2099,6 +2100,7 @@
     m.held_at = message.held_at || null;
     m.held_by = message.held_by || null;
     m.hold_notified_at = message.hold_notified_at || null;
+    m.agenda_no = message.agenda_no || null;
     m.discarded = !!message.discarded;
     m.discarded_at = message.discarded_at || null;
     m.discarded_by = message.discarded_by || null;
@@ -2190,6 +2192,7 @@
       return '<div class="agrow' + (ddayClass(a).indexOf('warn') !== -1 ? ' alarm' : '') + '">' +
         '<div class="agtop">' +
           '<span class="agchip ' + esc(dec) + '" title="' + esc(tip) + '">' + esc(decisionLabel(dec)) + '</span>' +
+          (a.agenda_no ? '<span class="agno" title="승인한 안건 번호">' + a.agenda_no + '번</span>' : '') +
           '<span class="agdday' + ddayClass(a) + '">' + esc(ddayText(a)) + '</span>' +
           '<button type="button" class="agopen" data-agopen="' + a.id + '" data-room="' + esc(a.room) + '" title="' + esc('#' + a.id + ' · ' + agendaRoomName(a.room) + '로 이동') + '">' +
             esc(a.excerpt || ('#' + a.id)) + '</button>' +
