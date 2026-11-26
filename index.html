@@ -109,7 +109,7 @@
   .sidebar.mode-rooms .roomsect{flex:1 1 auto}
   .sidebar.mode-rooms .tlsect{flex:0 0 auto;max-height:40vh}
   .sidebar.mode-rooms .tlsect > .secbody{max-height:210px}
-  .roomsect .rooms{overflow:visible}
+  .roomsect .rooms{overflow:visible;flex:0 0 auto} /* 방 목록은 줄이지 않는다 — 줄이면 아래 안건 칸과 겹친다 */
   .roomsect .agendas{max-height:none;flex:0 0 auto}
   .roomsect .aglist{overflow:visible;flex:0 0 auto}
   .timeline{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;display:flex;flex-direction:column;gap:1px;padding:0 1px 2px}
