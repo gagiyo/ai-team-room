@@ -184,6 +184,7 @@
   .attachbtn.agenda-on{border-color:#6b5a2a;color:#ffe0a3;background:#3a3016}
   .sidefoot{border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:8px}
   .sidefoot .who{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px}
+  .sidefoot .who .ver{margin-left:auto;font-size:11px;color:var(--muted);opacity:.75;letter-spacing:.02em}
   .sidefoot .who .dot{width:7px;height:7px;border-radius:50%;background:var(--ok)}
   .sidefoot .who .dot.off{background:#ef4444}
   .sidefoot a{font-size:12px;color:var(--muted);text-decoration:none}
@@ -563,7 +564,7 @@
     </section>
 
     <div class="sidefoot">
-      <div class="who"><span class="dot" id="statusDot"></span><span id="statusText">연결 중…</span></div>
+      <div class="who"><span class="dot" id="statusDot"></span><span id="statusText">연결 중…</span><span id="appVer" class="ver">v1.8.1</span></div>
       <a href="#" id="membersLink">멤버 상태 (마지막 활동)</a>
       <a href="#" id="docsLink">AI 접속 안내 (API)</a>
       <a href="#" id="logoutLink">나가기 (비밀번호 지우기)</a>
@@ -1305,7 +1306,8 @@
     closeNav(); // 모바일에서는 사이드바가 자연스럽게 닫힌다
     state.activeMsg = id;
     if (!room || room === state.room){
-      if (!scrollToMsg(id)) revealMsg(id);
+      // 화면에 없으면 이전 대화를 더 불러와 찾는다(안건 칸과 같은 이동 로직)
+      revealMsg(id);
       renderTimeline();
       return;
     }
@@ -1842,13 +1844,12 @@
         state.lastId = list.length ? list[list.length - 1].id : 0;
         state.hasMore = !!d.has_more;
         renderAll();
-        if (state.pendingScrollTo){
-          revealMsg(state.pendingScrollTo);
-        }
       } else if (list.length){
         state.lastId = list[list.length - 1].id;
         appendMessages(list);
       }
+      // 방을 막 바꾼 직후 불러오기가 겹쳤어도, 어느 쪽이 끝나든 기다리던 글로 이동한다
+      if (state.pendingScrollTo) revealMsg(state.pendingScrollTo);
       if (state.lastId) localStorage.setItem(seenKey(state.room), String(state.lastId));
       setStatus(true, '연결됨 · ' + kstTime(new Date().toISOString()));
       state.loading = false;
@@ -2226,31 +2227,65 @@
     state.activeMsg = id;
     return true;
   }
-  /* 타임라인·안건에서 고른 글이 지금 목록에 없으면 이전 대화를 몇 페이지 더 불러와 찾는다 */
-  function revealMsg(id, tries){
-    if (!id) return;
+  /* 타임라인·안건에서 고른 글로 이동 — 지금 목록에 없으면 이전 대화를 찾을 때까지 더 불러온다 */
+  var REVEAL_MAX_PAGES = 12; // 안전 상한 — 60건씩 최대 720건까지 거슬러 올라간다
+  function findLoadedMsg(id){
+    for (var i = 0; i < state.messages.length; i++){
+      if (state.messages[i].id === id) return state.messages[i];
+    }
+    return null;
+  }
+  function resetViewFiltersForReveal(){
+    if (!isFiltering()) return false;
+    state.viewFilter = 'all';
+    state.senderFilter = '';
+    renderAll({keepScroll: true});
+    renderFilterBar();
+    if (typeof renderMembers === 'function') renderMembers();
+    return true;
+  }
+  function finishReveal(found, id){
+    state.revealing = false;
     state.pendingScrollTo = 0;
-    // 지금 고른 보기 필터 때문에 그 글이 가려져 있으면, 전체로 되돌리고 찾는다
-    if (isFiltering() && !document.getElementById('m' + id)){
-      state.viewFilter = 'all';
-      state.senderFilter = '';
-      renderAll({keepScroll: true});
+    renderTimeline();
+    if (found){
+      setStatus(true, '#' + id + ' 글로 이동했습니다');
+    } else {
+      setStatus(false, '#' + id + ' 글을 찾지 못했습니다 — 이전 대화 더 보기로 직접 찾아 주세요');
     }
+  }
+  function revealMsg(id, pages){
+    if (!id) return;
+    pages = pages || 0;
+    state.pendingScrollTo = 0;
     state.revealing = true;
-    if (scrollToMsg(id)){ state.revealing = false; renderTimeline(); return; }
-    if (tries === undefined) tries = 3;
-    if (tries <= 0 || !state.hasMore){
-      state.revealing = false;
-      setStatus(false, '#' + id + ' 글이 지금 목록에 없습니다 — 이전 대화 더 보기로 찾아보세요');
-      return;
+    // ① 목록에는 있는데 보기·작업자 필터에 가려 화면에 없는 글 — 필터를 풀고 다시 그린다
+    if (isFiltering() && !document.getElementById('m' + id) && findLoadedMsg(id)){
+      resetViewFiltersForReveal();
     }
+    // ② 화면에 있으면 바로 스크롤·하이라이트
+    if (scrollToMsg(id)){ finishReveal(true, id); return; }
+    // ③ 더 불러올 이전 대화가 없거나 안전 상한에 닿았으면 안내
+    if (!state.hasMore || pages >= REVEAL_MAX_PAGES){ finishReveal(false, id); return; }
+    // ④ 이전 대화를 한 페이지 더 불러와 다시 시도
     state.loadingOlder = false;
-    loadOlder().then(function(){ revealMsg(id, tries - 1); });
+    setStatus(true, '#' + id + ' 글로 가는 중… 이전 대화 ' + (pages + 1) + '페이지 더 불러오는 중');
+    var before = state.messages.length;
+    loadOlder().then(function(){
+      state.revealing = true; // 불러오는 사이 스크롤 리스너가 끼어들지 않게
+      if (state.messages.length === before && !document.getElementById('m' + id)){
+        finishReveal(false, id); // 더 가져온 글이 없다 — 같은 요청을 되풀이하지 않는다
+        return;
+      }
+      revealMsg(id, pages + 1);
+    });
   }
   function openAgenda(room, id){
-    if (!room) return;
-    closeNav();
-    if (room === state.room){ scrollToMsg(id); return; }
+    if (!room || !id) return;
+    closeNav(); // 모바일에서는 사이드바가 닫히고 오른쪽 본문에 그 글이 보인다
+    state.activeMsg = id;
+    // 같은 방이어도 화면에 없을 수 있으므로(최근 60건 밖·필터) 바로 스크롤하지 않고 이동 로직에 맡긴다
+    if (room === state.room){ revealMsg(id); return; }
     state.pendingScrollTo = id;
     switchRoom(room);
   }
@@ -2558,11 +2593,19 @@
       })
       .catch(function(){});
   }
+  function loadVersion(){
+    // 화면 버전은 서버(/api/health)가 알려 주는 값을 그대로 보여 준다 — 배포본이 섞였는지 눈으로 확인하려고
+    api('/api/health').then(function(d){
+      var el = $('appVer');
+      if (el && d && d.version) el.textContent = 'v' + d.version;
+    }).catch(function(){});
+  }
   function boot(){
     elGate.hidden = true;
     updateTitle();
     renderSenders();
     loadMe();
+    loadVersion();
     loadRooms().then(function(){ loadTimeline(); }).catch(function(){ setStatus(false, '연결 끊김'); });
     loadMessages(true);
     loadMembers();

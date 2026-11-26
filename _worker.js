@@ -44,7 +44,7 @@
 
 const SERVER_NAME = 'ai-team-room';
 const SERVER_TITLE = 'AI 팀 회의실';
-const SERVER_VERSION = '1.8.0'; // 2026-11-26 안건 삭제 결정(승인·미승인·보류·삭제) · 주제 제목 표(topics)
+const SERVER_VERSION = '1.8.1'; // 2026-11-26 안건·타임라인 클릭 이동: 최근 60건 밖·필터 가림까지 찾아 이동
 
 // 사람(최종 결정) — AI 숫자 집계에서 뺀다.
 const HUMAN_NAME = '지존';
