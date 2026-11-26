@@ -108,8 +108,8 @@ function normalizeDecision(value) {
 const AGENDA_REJECT_DAYS = 7;
 const AGENDA_HOLD_DAYS = 30;
 const AGENDA_HOLD_ALARM_DAYS = 7;
-// 삭제: 지존이 '삭제'로 정한 안건은 삭제 칸에 7일 머문 뒤 지운다(그 사이 다른 상태로 되돌릴 수 있다)
-const AGENDA_DELETE_DAYS = 7;
+// 삭제: 지존이 '삭제'로 정한 안건은 '다 끝난 안건'으로 보고 왼쪽 안건 칸에서만 빠진다.
+//       글 자체는 지우지 않고(기존 보관 정책 그대로), 안건 수명 주기 삭제 대상에서도 뺀다.
 const DAY_MS = 86400000;
 
 function isoOrNull(ms) {
@@ -139,15 +139,7 @@ function agendaLifecycle(row, decision, nowMs, policy) {
     return { stage: 'approved', deadline_at: null, days_left: null, hold_alarm_at: null };
   }
   if (state === 'deleted') {
-    const deleteDays = days.deleteDays == null ? AGENDA_DELETE_DAYS : days.deleteDays;
-    const sinceMs = parseMs(row && row.discarded_at) || now;
-    const deadlineMs = sinceMs + deleteDays * DAY_MS;
-    return {
-      stage: now >= deadlineMs ? 'delete_expired' : 'deleted',
-      discarded_since: isoOrNull(sinceMs),
-      deadline_at: isoOrNull(deadlineMs),
-      days_left: daysLeft(deadlineMs, now),
-    };
+    return { stage: 'deleted', discarded_at: (row && row.discarded_at) || null, deadline_at: null, days_left: null, hold_alarm_at: null };
   }
   if (state === 'held') {
     const heldMs = parseMs(row && row.held_at) || parseMs(row && row.created_at) || now;
@@ -1248,12 +1240,12 @@ async function findAgendaTargets(env, opts) {
   if (!agreeOk) return [];
   const discardOk = await ensureDiscardColumns(env);
   const discardCols = discardOk ? ', discarded_at' : '';
-  const discardWhere = discardOk ? ' or discarded_at is not null' : '';
+  const discardWhere = discardOk ? ' and discarded_at is null' : '';
   const res = await env.DB.prepare(
     `select id, room_slug, sender, content, created_at, attachment_id, pinned, hidden_at,
             agenda, approved_at, rejected_at, held_at, hold_notified_at${discardCols}
        from messages
-      where (agenda = 1${discardWhere}) and approved_at is null
+      where agenda = 1 and approved_at is null${discardWhere}
       order by id asc limit ?`
   )
     .bind(Math.max(opts.limit || 200, 200))
@@ -1263,7 +1255,7 @@ async function findAgendaTargets(env, opts) {
   for (const row of res.results || []) {
     if (String(row.content == null ? '' : row.content) === DELETED_TEXT) continue;
     const decision = decisionOf(row);
-    if (decision === 'approved') continue;
+    if (decision === 'approved' || decision === 'deleted') continue; // 삭제(끝난 안건)는 글을 지우지 않는다
     const life = agendaLifecycle(row, decision, now, {
       rejectDays: opts.agenda_reject_days,
       holdDays: opts.agenda_hold_days,
@@ -1438,9 +1430,7 @@ async function cleanupRun(env, opts) {
   // 안건 수명 주기 — 미승인 기한 임박/초과, 보류 알람·삭제 예정을 미리 보여 준다.
   const agendaTargets = opts.agenda_lifecycle === false ? [] : await findAgendaTargets(env, opts);
   const toAlarm = agendaTargets.filter((t) => t.decision === 'held' && t.life.stage === 'hold_alarm_due');
-  const toDelete = agendaTargets.filter(
-    (t) => t.life.stage === 'reject_expired' || t.life.stage === 'hold_expired' || t.life.stage === 'delete_expired'
-  );
+  const toDelete = agendaTargets.filter((t) => t.life.stage === 'reject_expired' || t.life.stage === 'hold_expired');
   const agendaPreview = (t) => ({
     id: t.row.id,
     room: t.row.room_slug,
@@ -2504,8 +2494,7 @@ async function handleApi(request, env, url) {
         reject_days: AGENDA_REJECT_DAYS,
         hold_days: AGENDA_HOLD_DAYS,
         hold_alarm_after_days: AGENDA_HOLD_ALARM_DAYS,
-        delete_days: AGENDA_DELETE_DAYS,
-        note: '미승인은 7일 뒤, 보류는 30일 뒤 알람 후 7일 더 지나면 삭제됩니다. 삭제로 정한 안건은 삭제 칸에 7일 머문 뒤 지워집니다(그 사이 되돌릴 수 있음). 승인한 안건은 기존 보관 정책을 따릅니다.',
+        note: '미승인은 7일 뒤, 보류는 30일 뒤 알람 후 7일 더 지나면 삭제됩니다. 삭제로 정한 안건은 끝난 안건으로 보고 왼쪽 안건 칸에서만 빠집니다(글은 그대로). 승인한 안건은 기존 보관 정책을 따릅니다.',
       },
       agendas,
       server_time: new Date().toISOString(),
