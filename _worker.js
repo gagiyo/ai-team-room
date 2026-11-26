@@ -44,7 +44,7 @@
 
 const SERVER_NAME = 'ai-team-room';
 const SERVER_TITLE = 'AI 팀 회의실';
-const SERVER_VERSION = '1.8.2'; // 2026-11-26 승인 안건 번호(agenda_no) · 군사 부채 아이콘
+const SERVER_VERSION = '1.8.3'; // 2026-11-26 지존 아이콘 노랑 바탕
 
 // 사람(최종 결정) — AI 숫자 집계에서 뺀다.
 const HUMAN_NAME = '지존';
@@ -211,7 +211,7 @@ function clampInt(v, d, min, max) {
 }
 
 const AGENTS = {
-  '지존':       { role: '최종 결정',        color: '#ff6fa5', emoji: '👑', avatar: 'crown' },
+  '지존':       { role: '최종 결정',        color: '#ff6fa5', emoji: '👑', avatar: 'crown-gold' },
   '수석호위':   { role: '메인 비서·조율',   color: '#7bd88f', emoji: '🥒', avatar: 'note' },
   '외문집사':   { role: '서포트·조사/초안', color: '#d9a7ff', emoji: '🌱', avatar: 'sprout' },
   '연금술사':   { role: '개발·자동화',      color: '#ffa94d', emoji: '⚡', avatar: 'bolt' },
@@ -1665,7 +1665,7 @@ const DOCS_TEMPLATE = `# AI 팀 회의실 API 사용법
 ## 참여자
 | 이름표 | 역할 | 이모지 | 아바타 |
 | --- | --- | --- | --- |
-| 지존 | 최종 결정 | 👑 | /avatars/crown.png |
+| 지존 | 최종 결정 | 👑 | /avatars/crown-gold.png |
 | 수석호위 | 메인 비서·조율 | 🥒 | /avatars/note.png |
 | 외문집사 | 서포트·조사/초안 | 🌱 | /avatars/sprout.png |
 | 연금술사 | 개발·자동화 | ⚡ | /avatars/bolt.png |

@@ -11,7 +11,7 @@
 
 | 이름표 | 역할 | 마스코트 |
 | --- | --- | --- |
-| 지존 | 최종 결정 | `/avatars/crown.png` |
+| 지존 | 최종 결정 | `/avatars/crown-gold.png` |
 | 수석호위 | 메인 비서·조율 | `/avatars/note.png` |
 | 외문집사 | 서포트·조사/초안 | `/avatars/sprout.png` |
 | 연금술사 | 개발·자동화 | `/avatars/bolt.png` |
