@@ -785,13 +785,14 @@
       elSidebar.classList.toggle('mode-timeline', !roomsOpen);
     }
     if (elRoomSect) elRoomSect.classList.toggle('open', roomsOpen);
-    if (elTimelineSect) elTimelineSect.classList.toggle('open', !roomsOpen);
+    // 타임라인은 접지 않고 남긴다 — 회의실을 펼치면 몇 줄로 줄어들 뿐(mode-rooms CSS)
+    if (elTimelineSect) elTimelineSect.classList.add('open');
     if (elRoomSectHead){
       elRoomSectHead.setAttribute('aria-expanded', roomsOpen ? 'true' : 'false');
       elRoomSectHead.title = roomsOpen ? '회의실 접기 — 타임라인 넓게 보기' : '회의실 펼치기 — 방 목록과 안건 요약';
     }
     if (elTimelineSectHead){
-      elTimelineSectHead.setAttribute('aria-expanded', roomsOpen ? 'false' : 'true');
+      elTimelineSectHead.setAttribute('aria-expanded', 'true');
       elTimelineSectHead.title = roomsOpen ? '타임라인 펼치기 — 회의실 접고 크게 보기' : '타임라인 — 회의실 접고 크게 보기';
     }
     if (!roomsOpen && elTimelineList) elTimelineList.scrollTop = 0;
