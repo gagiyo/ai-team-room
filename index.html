@@ -2220,7 +2220,13 @@
   function scrollToMsg(id){
     var el = document.getElementById('m' + id);
     if (!el) return false;
-    el.scrollIntoView({block:'center', behavior:'smooth'});
+    // 대화창 안에서 가운데로 — 글이 길면 위쪽이 보이도록
+    var box = el.getBoundingClientRect(), cbox = elMessages.getBoundingClientRect();
+    var delta = box.top - cbox.top - Math.max(0, (cbox.height - box.height) / 2);
+    if (Math.abs(delta) > 2){
+      if (elMessages.scrollBy) elMessages.scrollBy({top: delta, behavior: 'smooth'});
+      else elMessages.scrollTop += delta;
+    }
     el.classList.remove('flash');
     void el.offsetWidth;
     el.classList.add('flash');
