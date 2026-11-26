@@ -37,9 +37,18 @@
   /* ---------- layout ---------- */
   #app{display:flex;height:100dvh;width:100%;}
   .sidebar{
-    width:236px;flex:0 0 236px;background:var(--panel);border-right:1px solid var(--line);
+    width:var(--sbw,236px);flex:0 0 var(--sbw,236px);background:var(--panel);border-right:1px solid var(--line);
     display:flex;flex-direction:column;padding:16px 12px;gap:14px;
+    position:relative;min-width:0;
   }
+  /* 왼쪽 프레임 넓이 조절 — 오른쪽 가장자리를 끌어서 바꾼다(두 번 누르면 기본 넓이) */
+  .sbresize{
+    position:absolute;top:0;right:-4px;bottom:0;width:8px;z-index:5;cursor:col-resize;
+    touch-action:none;background:transparent;
+  }
+  .sbresize::after{content:'';position:absolute;top:0;bottom:0;left:3px;width:2px;background:transparent;transition:background .12s}
+  .sbresize:hover::after,body.sb-resizing .sbresize::after{background:var(--accent)}
+  body.sb-resizing{cursor:col-resize;user-select:none;-webkit-user-select:none}
   .brand{display:flex;align-items:center;gap:9px;padding:2px 6px 12px;border-bottom:1px solid var(--line)}
   .brand .logo{font-size:19px}
   .brand b{font-size:15.5px;letter-spacing:-0.005em}
@@ -111,7 +120,7 @@
   .tlrow .tltime{flex:0 0 auto;font-variant-numeric:tabular-nums}
   .tlrow .tlwho{flex:0 1 auto;max-width:72px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .tlrow .tlroom{flex:0 0 auto;margin-left:auto;font-size:9.5px;border:1px solid var(--line);border-radius:6px;padding:0 4px;color:#8f9bb0}
-  .tlrow .tltitle{font-size:12px;line-height:1.45;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;word-break:break-word}
+  .tlrow .tltitle{font-size:12px;line-height:1.45;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
   .tlrow.active .tltitle{color:#fff}
   .tlempty{font-size:11.5px;color:#8f9bb0;padding:8px 6px;line-height:1.55}
 
@@ -435,6 +444,7 @@
       position:fixed;left:0;top:0;bottom:0;z-index:40;transform:translateX(-100%);
       transition:transform .2s ease;width:250px;box-shadow:0 0 40px #000a;
     }
+    .sbresize{display:none}
     body.nav-open .sidebar{transform:none}
     body.nav-open .navscrim{display:block}
     body.nav-open .menu-btn{color:var(--text)}
@@ -460,6 +470,7 @@
 <body>
 <div id="app">
   <aside class="sidebar mode-timeline" id="sidebar">
+    <div class="sbresize" id="sbResize" role="separator" aria-orientation="vertical" aria-label="왼쪽 프레임 넓이 조절" title="끌어서 넓이 조절 · 두 번 누르면 기본 넓이"></div>
     <div class="brand">
       <span class="logo">🌸</span>
       <div class="brandtext">
@@ -810,6 +821,51 @@
   if (elRoomSectHead) elRoomSectHead.addEventListener('click', function(){ setSect('rooms'); });
   if (elTimelineSectHead) elTimelineSectHead.addEventListener('click', function(){ setSect('timeline'); });
 
+  /* ---------- 왼쪽 프레임 넓이 조절 (데스크톱) ---------- */
+  (function(){
+    var handle = document.getElementById('sbResize');
+    var root = document.documentElement;
+    var SB_MIN = 200, SB_MAX = 520, SB_DEF = 236, SB_KEY = 'ai_team_room_sbw';
+    function clampW(w){
+      var max = Math.min(SB_MAX, Math.max(SB_MIN, Math.floor(window.innerWidth * 0.6)));
+      return Math.max(SB_MIN, Math.min(max, Math.round(w)));
+    }
+    function applyW(w, save){
+      w = clampW(w);
+      root.style.setProperty('--sbw', w + 'px');
+      if (save){ try { localStorage.setItem(SB_KEY, String(w)); } catch(e){} }
+      return w;
+    }
+    try { var saved = parseInt(localStorage.getItem(SB_KEY), 10); if (saved) applyW(saved, false); } catch(e){}
+    if (!handle || !elSidebar) return;
+    var dragging = false, startX = 0, startW = 0, lastW = 0;
+    handle.addEventListener('pointerdown', function(e){
+      if (e.button !== undefined && e.button !== 0) return;
+      dragging = true; startX = e.clientX; startW = elSidebar.getBoundingClientRect().width; lastW = startW;
+      try { handle.setPointerCapture(e.pointerId); } catch(_){}
+      document.body.classList.add('sb-resizing');
+      e.preventDefault();
+    });
+    handle.addEventListener('pointermove', function(e){
+      if (!dragging) return;
+      lastW = applyW(startW + (e.clientX - startX), false);
+    });
+    function endDrag(e){
+      if (!dragging) return;
+      dragging = false;
+      document.body.classList.remove('sb-resizing');
+      try { handle.releasePointerCapture(e.pointerId); } catch(_){}
+      applyW(lastW, true);
+    }
+    handle.addEventListener('pointerup', endDrag);
+    handle.addEventListener('pointercancel', endDrag);
+    handle.addEventListener('dblclick', function(){ applyW(SB_DEF, true); });
+    window.addEventListener('resize', function(){
+      var cur = parseInt(getComputedStyle(root).getPropertyValue('--sbw'), 10);
+      if (cur) applyW(cur, false);
+    });
+  })();
+
   /* ---------- 가운데 보기 필터 (전체 · 지존 지시 · 안건 · 보고) ---------- */
   /* 기존 글은 그대로 두고 화면에서만 판별한다. 안건은 서버 판별식과 같은 기준을 쓴다. */
   var FILTER_LABEL = {all:'전체', lord:'지존·내 지시만', agenda:'안건만', report:'보고만'};
@@ -875,7 +931,39 @@
   }
 
   /* ---------- 왼쪽 타임라인 — 모든 방의 최근 글을 시간순으로 ---------- */
-  var TL_PER_ROOM = 25, TL_MAX = 60;
+  var TL_PER_ROOM = 60, TL_MAX = 40;
+  /* 타임라인에는 핵심만 — 보고·안건·고정 글과 긴 제안만 남기고,
+     지존의 지시·잡담·짧은 인사/접수/진행 중 알림은 뺀다(가운데 대화에는 그대로 남는다) */
+  var TL_ACK_RE = /진행\s*중|착수하겠|마치는\s*대로|잘\s*(?:받았|수령|숙지)|수령해|대기\s*중|기다리겠|명심하겠|감사(?:하옵|드리옵|합니다)|수고\s*많|황공|송구|환영|축하/;
+  function tlKeep(m){
+    if (!m || m.deleted || m.hidden) return false;
+    if (m.sender === '지존') return false;
+    if (m.retention === 'casual') return false;
+    if (m.pinned) return true;
+    if (isAgendaMsg(m)) return true;
+    var s = String(m.content || '');
+    var short = s.length < 320;
+    if ((short || /축하/.test(s.slice(0, 160))) && TL_ACK_RE.test(s)) return false;
+    if (isReportMsg(m)) return true;
+    return s.length >= 600; // 긴 제안·설계안
+  }
+  /* 짧은 요약 — 머리 인사·호칭·높임 어미를 걷어내고 핵심 구절만 */
+  var TL_GREET_RE = /아뢰옵|아뢰오|받들|받드|명심|윤허|황공|송구|감사|수고|인사\s*올|덧붙여|바로잡|사과/;
+  function tlClean(t){
+    return String(t || '')
+      .replace(/```/g, '').replace(/`/g, '').replace(/\*\*/g, '')
+      .replace(/^[\s>#]+/, '').replace(/^(?:[-*•·]|\d+[.)]|[一二三四五六七八九十]+\.)\s*/, '')
+      .replace(/\((?:[^()]*?(?:id|커밋|테스트|분부|#)\s*[^()]*)\)/gi, '')
+      .replace(/[\u{1F300}-\u{1FAFF}☀-➿️‍]/gu, '')
+      .replace(/^(?:지존|수석호위\s*님?|외문집사\s*님?|군사\s*님?|@\S+)\s*[,，、]\s*/, '')
+      .replace(/\s*(?:하였|했|되었|되어\s*있|하겠|드리|올리|마쳤|이)?사옵니다[.!]*\s*$/, '')
+      .replace(/\s*(?:이옵니다|하옵니다|입니다|합니다|습니다)[.!]*\s*$/, '')
+      .replace(/\s+/g, ' ').replace(/[\s:：,.!—-]+$/, '').trim();
+  }
+  function tlCut(t, n){
+    t = String(t || '');
+    return t.length > n ? t.slice(0, n - 1).replace(/[\s.,·]+$/, '') + '…' : t;
+  }
   function tlDayLabel(iso){
     try {
       var key = function(d){ return new Date(d).toLocaleDateString('ko-KR', {timeZone:'Asia/Seoul'}); };
@@ -885,34 +973,57 @@
       return new Date(iso).toLocaleDateString('ko-KR', {timeZone:'Asia/Seoul', month:'numeric', day:'numeric', weekday:'short'});
     } catch(e){ return ''; }
   }
-  /* 타임라인 제목 — 첫 줄 요약(마크다운 기호는 걷어낸다) */
+  /* 타임라인 제목 — 한 줄 핵심 요약 */
   function tlTitle(m){
     var raw = String(m.content || '').replace(/\r/g, '').replace(/^[ \t]*```[^\n]*$/gm, '');
     if (!raw.trim()){
       if (m.attachment) return '📎 ' + (m.attachment.filename || '첨부');
       return m.deleted ? '삭제된 메시지입니다.' : '(내용 없음)';
     }
-    var lines = raw.split('\n'), line = '';
-    for (var i = 0; i < lines.length; i++){
-      var t = lines[i]
-        .replace(/```/g, '')
-        .replace(/`/g, '')
-        .replace(/\*\*/g, '')
-        .replace(/^[\s>#]+/, '')
-        .replace(/^[-*•]\s+/, '')
-        .trim();
-      if (t){ line = t; break; }
+    var report = isReportMsg(m), agenda = isAgendaMsg(m);
+    var ver = (raw.match(/\bv\d+\.\d+(?:\.\d+)?\b/) || [''])[0];
+    // 1) 완료 보고는 머리 400자 안의 첫 굵은 구절이 대개 핵심(예: **안건 버튼·안건 요약(v1.5.0)**)
+    var head = raw.slice(0, 400), core = '';
+    // 0) 첫 줄이 '…v1.3.0 배포 완료 아뢰옵니다'처럼 인사 꼬리만 붙은 핵심이면 그대로 쓴다
+    var first = tlClean((raw.match(/[^\n]*\S[^\n]*/) || [''])[0]);
+    if (report && /아뢰옵|아뢰오/.test(first)){
+      var fc = first.replace(/\s*(?:을|를|이|가)?\s*(?:삼가\s*)?(?:아뢰옵|아뢰오)[^]*$/, '').replace(/^[^,，]*?(?:외문집사|수석호위|군사)\s*/, '').trim();
+      if (fc.length >= 10 && !TL_GREET_RE.test(fc)) core = fc;
     }
-    line = line.replace(/\s+/g, ' ');
-    if (!line) return '(제목 없음)';
-    if (line.length > 62) line = line.slice(0, 61).replace(/[\s.,]+$/, '') + '…';
-    return line;
+    var bm = !report ? [] : head.match(/\*\*([^*\n]{4,80})\*\*/g) || [];
+    for (var b = 0; b < bm.length && !core; b++){
+      var c = tlClean(bm[b]);
+      if (c.length >= 8 && !TL_GREET_RE.test(c)) core = c;
+    }
+    // 2) 없으면 인사·호칭 줄을 건너뛴 첫 본문 줄
+    if (!core){
+      var lines = raw.split('\n');
+      for (var i = 0; i < lines.length && !core; i++){
+        var t = tlClean(lines[i]);
+        if (!t || t.length < 4) continue;
+        if (TL_GREET_RE.test(t) && t.length < 70){
+          // '…v1.3.0 배포 완료 아뢰옵니다' 처럼 인사 꼬리만 떼면 핵심이 남는 줄은 살린다
+          var cut = t.replace(/\s*(?:을|를|이|가)?\s*(?:삼가\s*)?(?:아뢰옵|아뢰오)[^]*$/, '').replace(/^[^,，]*?(?:외문집사|수석호위|군사)\s*/, '').trim();
+          if (cut.length >= 8 && !TL_GREET_RE.test(cut)) core = cut;
+          continue;
+        }
+        core = t;
+      }
+    }
+    if (!core) core = tlClean(raw.split('\n')[0]) || '(제목 없음)';
+    // 첫 문장만
+    core = core.split(/[.!?](?:\s|$)|。/)[0];
+    // 완료 보고의 머리에 판 번호가 있으면 앞에 붙인다
+    if (report && ver && raw.slice(0, 300).indexOf(ver) >= 0 && core.indexOf(ver) < 0) core = ver + ' ' + core;
+    var tag = agenda ? '안건' : ((report && !/완료|마쳤/.test(core)) ? '완료' : '');
+    core = tlCut(core, tag ? 30 : 34);
+    return tag ? core + ' · ' + tag : core;
   }
   function renderTimeline(){
     if (!elTimelineList) return;
-    var list = (state.timeline || []).slice().reverse(); // 최신 글이 위
+    var list = (state.timeline || []).filter(tlKeep).slice().reverse(); // 핵심만 · 최신 글이 위
     if (!list.length){
-      elTimelineList.innerHTML = '<div class="tlempty">아직 글이 없습니다.<br>방에 글이 올라오면 시간·제목이 여기 쌓입니다.</div>';
+      elTimelineList.innerHTML = '<div class="tlempty">아직 핵심 글이 없습니다.<br>보고·안건이 올라오면 시간·요약이 여기 쌓입니다.</div>';
       if (elTimelineHint) elTimelineHint.textContent = '0건';
       return;
     }
@@ -934,7 +1045,7 @@
     var keep = elTimelineList.scrollTop;
     elTimelineList.innerHTML = html;
     elTimelineList.scrollTop = keep;
-    if (elTimelineHint) elTimelineHint.textContent = '최근 ' + list.length + '건 · 최신순';
+    if (elTimelineHint) elTimelineHint.textContent = '핵심 ' + list.length + '건 · 최신순';
   }
   function loadTimeline(){
     var rooms = (state.rooms && state.rooms.length) ? state.rooms.slice() : [{slug: state.room, name: ''}];
@@ -961,6 +1072,7 @@
         if (ta !== tb) return ta - tb;
         return (a.id || 0) - (b.id || 0);
       });
+      all = all.filter(tlKeep);
       if (all.length > TL_MAX) all = all.slice(all.length - TL_MAX);
       state.timeline = all;
       state.timelineAt = Date.now();
