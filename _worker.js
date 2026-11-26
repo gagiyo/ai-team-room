@@ -368,6 +368,15 @@ function ensureAuthTables(env) {
          window_start integer not null,
          count integer not null
        )`,
+      // 주제별 대화 목록(2026-11-26 추가) — 주제는 화면이 답글 연결로 묶고, 여기에는 지존이 고친 제목만 둔다.
+      `create table if not exists topics (
+         room_slug text not null,
+         root_id integer not null,
+         title text not null,
+         updated_by text,
+         updated_at text not null,
+         primary key (room_slug, root_id)
+       )`,
     ];
     for (const sql of stmts) {
       try {
@@ -2617,6 +2626,64 @@ async function handleApi(request, env, url) {
       updated = out.message;
     }
     return json({ ok: true, room, message: updated });
+  }
+
+  // GET /api/rooms/:slug/topics — 지존이 고친 주제 제목 목록 · POST /api/rooms/:slug/topics/:rootId — 제목 고치기(지존만, 빈 제목은 자동 제목으로 되돌림)
+  if (parts[1] === 'rooms' && (parts.length === 4 || parts.length === 5) && parts[3] === 'topics') {
+    const slug = decodeURIComponent(parts[2]);
+    const room = await getRoom(env, slug);
+    if (!room) return json({ ok: false, error: 'room_not_found', message: `방 '${slug}' 이 없습니다.` }, 404);
+    await ensureAuthTables(env);
+    if (parts.length === 4) {
+      if (method !== 'GET') return json({ ok: false, error: 'method_not_allowed' }, 405, { allow: 'GET, OPTIONS' });
+      let rows = [];
+      try {
+        const r = await env.DB.prepare(
+          'select root_id, title, updated_by, updated_at from topics where room_slug = ? order by root_id desc limit 500'
+        )
+          .bind(slug)
+          .all();
+        rows = (r && r.results) || [];
+      } catch (e) {
+        rows = [];
+      }
+      return json({ ok: true, room, topics: rows });
+    }
+    if (method !== 'POST') return json({ ok: false, error: 'method_not_allowed' }, 405, { allow: 'POST, OPTIONS' });
+    if (!isSovereign(principal)) {
+      return json({ ok: false, error: 'forbidden', message: '주제 제목은 지존만 고칠 수 있습니다.' }, 403);
+    }
+    if (await overLimit(env, 'write:' + (principal.agent || clientIp(request)), 40, 60)) {
+      return json({ ok: false, error: 'rate_limited', message: '너무 자주 요청했습니다. 잠시 후 다시 시도하세요.' }, 429, {
+        'retry-after': '60',
+      });
+    }
+    const rootId = parseInt(parts[4], 10);
+    if (!Number.isFinite(rootId) || rootId <= 0) return json({ ok: false, error: 'invalid_id' }, 400);
+    let body = {};
+    try {
+      body = (await request.json()) || {};
+    } catch (e) {
+      body = {};
+    }
+    const title = String(body.title == null ? '' : body.title).replace(/\s+/g, ' ').trim();
+    if (title.length > 60) return json({ ok: false, error: 'invalid_request', message: '제목은 60자까지 가능합니다.' }, 400);
+    const now = new Date().toISOString();
+    try {
+      if (!title) {
+        await env.DB.prepare('delete from topics where room_slug = ? and root_id = ?').bind(slug, rootId).run();
+      } else {
+        await env.DB.prepare(
+          'insert into topics (room_slug, root_id, title, updated_by, updated_at) values (?, ?, ?, ?, ?) ' +
+            'on conflict(room_slug, root_id) do update set title = excluded.title, updated_by = excluded.updated_by, updated_at = excluded.updated_at'
+        )
+          .bind(slug, rootId, title, approverName(principal), now)
+          .run();
+      }
+    } catch (e) {
+      return json({ ok: false, error: 'unavailable', message: '주제 제목을 저장하지 못했습니다.' }, 503);
+    }
+    return json({ ok: true, room, topic: { root_id: rootId, title: title || null, updated_at: now } });
   }
 
   // POST /api/rooms/:slug/messages/:id/decision — 안건 결정(미결정 · 승인 · 미승인). 지존만.

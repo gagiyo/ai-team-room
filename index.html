@@ -123,6 +123,28 @@
   .tlrow .tltitle{font-size:12px;line-height:1.45;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
   .tlrow.active .tltitle{color:#fff}
   .tlempty{font-size:11.5px;color:#8f9bb0;padding:8px 6px;line-height:1.55}
+  /* 주제별 대화 목록 */
+  .tptopic{display:flex;flex-direction:column;border-radius:8px}
+  .tptopic + .tptopic{margin-top:1px}
+  .tphead{display:flex;align-items:center;gap:4px;border-radius:8px;padding:0 4px 0 0}
+  .tphead:hover{background:var(--panel2)}
+  .tphead.active{background:var(--accent-dim)}
+  .tptoggle{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:6px;background:transparent;border:0;padding:6px 4px 6px 6px;color:#dbe3ee;text-align:left}
+  .tptoggle .chev{flex:0 0 auto;width:9px;font-size:8.5px;color:var(--muted);transition:transform .16s ease}
+  .tptopic.open .tptoggle .chev{transform:rotate(90deg);color:var(--accent)}
+  .tptitle{font-size:12.5px;font-weight:600;line-height:1.4;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+  .tptopic.done .tptitle{color:#a9b5c6;font-weight:500}
+  .tpmeta{flex:0 0 auto;display:flex;align-items:center;gap:4px}
+  .tpbadge{font-size:9.5px;border-radius:6px;padding:0 4px;border:1px solid var(--line);white-space:nowrap}
+  .tpbadge.go{color:#7bd88f;border-color:#2f5a3a}
+  .tpbadge.ok{color:#8f9bb0}
+  .tpbadge.ag{color:#ffd9e6;border-color:#7a3a51}
+  .tptime{font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .tpedit{background:transparent;border:0;color:var(--muted);font-size:11px;padding:2px 3px;border-radius:5px;opacity:0;transition:opacity .12s}
+  .tphead:hover .tpedit,.tpedit:focus-visible{opacity:1}
+  .tpedit:hover{color:#fff;background:#2a3140}
+  @media (hover:none){ .tpedit{opacity:.7} }
+  .tpflow{display:flex;flex-direction:column;gap:1px;margin:0 0 4px 12px;padding-left:6px;border-left:1px solid #333b4a}
 
   /* ---------- 왼쪽 프레임: 안건 · 미결정 요약 ---------- */
   .agendas{flex:0 1 auto;display:flex;flex-direction:column;min-height:0;max-height:38vh;border-top:1px solid var(--line);padding-top:10px;gap:6px}
@@ -931,7 +953,7 @@
   }
 
   /* ---------- 왼쪽 타임라인 — 모든 방의 최근 글을 시간순으로 ---------- */
-  var TL_PER_ROOM = 60, TL_MAX = 40;
+  var TL_PER_ROOM = 150, TL_MAX = 400;
   /* 타임라인에는 핵심만 — 보고·안건·고정 글과 긴 제안만 남기고,
      지존의 지시·잡담·짧은 인사/접수/진행 중 알림은 뺀다(가운데 대화에는 그대로 남는다) */
   var TL_ACK_RE = /진행\s*중|착수하겠|마치는\s*대로|잘\s*(?:받았|수령|숙지)|수령해|대기\s*중|기다리겠|명심하겠|감사(?:하옵|드리옵|합니다)|수고\s*많|황공|송구|환영|축하/;
@@ -1019,33 +1041,152 @@
     core = tlCut(core, tag ? 30 : 34);
     return tag ? core + ' · ' + tag : core;
   }
+  /* ---------- 주제별 대화 목록 — 답글 연결로 주제를 묶고, 주제 안에 시간순 흐름 ---------- */
+  /* 주제의 시작: 지존이 답글 없이 새로 내린 지시(짧은 '승인' 같은 말은 바로 앞 주제에 붙는다).
+     AI가 답글 없이 올린 글은 같은 방의 가장 최근 주제에 붙는다(2시간 이내). */
+  var TOPIC_GAP_MS = 2 * 3600 * 1000;
+  function tpKey(room, id){ return (room || '') + ':' + id; }
+  function buildTopics(msgs){
+    var byKey = {}, topicOf = {}, topics = [], lastTopicByRoom = {};
+    msgs.forEach(function(m){ byKey[tpKey(m.room, m.id)] = m; });
+    msgs.forEach(function(m){
+      var key = tpKey(m.room, m.id), t = null;
+      if (m.reply_to_id){
+        var pk = tpKey(m.room, m.reply_to_id);
+        if (topicOf[pk]) t = topicOf[pk];
+        else if (!byKey[pk]){
+          // 답글 대상이 목록 밖(오래된 글) — 그 글을 뿌리로 주제를 연다
+          t = {room: m.room, root: m.reply_to_id, rootMsg: null, rootText: (m.reply_to && m.reply_to.content) || '', items: []};
+          topics.push(t); topicOf[pk] = t;
+        }
+      }
+      if (!t){
+        var prev = lastTopicByRoom[m.room];
+        var near = prev && (Date.parse(m.created_at) - prev.lastAt) < TOPIC_GAP_MS;
+        var lordNew = m.sender === '지존' && String(m.content || '').replace(/\s+/g, '').length >= 25;
+        if (prev && near && !lordNew) t = prev;
+        else if (prev && m.sender === '지존' && !lordNew && !near) t = null;
+        if (!t){
+          t = {room: m.room, root: m.id, rootMsg: m, rootText: m.content || '', items: []};
+          topics.push(t);
+        }
+      }
+      topicOf[key] = t;
+      t.items.push(m);
+      t.lastAt = Date.parse(m.created_at) || 0;
+      lastTopicByRoom[m.room] = t;
+    });
+    topics.forEach(function(t){
+      // 상태 — 마지막 지존 말씀 뒤에 완료 보고가 있으면 '완료'
+      // 상태 — 완료 보고가 있고 그 뒤에 지존의 새 지시(긴 말씀)가 없으면 '완료'.
+      //        12시간 넘게 움직임이 없는 주제도 아래 '지난 주제'로 내린다.
+      var lastReport = -1, lastLongLord = -1;
+      t.items.forEach(function(m, i){
+        if (m.sender === '지존' && String(m.content || '').replace(/\s+/g, '').length >= 25) lastLongLord = i;
+        if (isReportMsg(m) && tlKeep(m) && !isAgendaMsg(m)) lastReport = i;
+      });
+      t.done = lastReport >= 0 && lastReport > lastLongLord;
+      t.stale = !t.done && (Date.now() - t.lastAt) > 12 * 3600 * 1000;
+      t.agenda = t.items.some(function(m){ return isAgendaMsg(m) && m.decision !== 'approved'; });
+    });
+    return topics;
+  }
+  function topicAutoTitle(t){
+    var src = t.rootMsg || {content: t.rootText, sender: ''};
+    var txt = String(src.content || '').replace(/\r/g, '');
+    var line = '';
+    var lines = txt.split('\n');
+    for (var i = 0; i < lines.length && !line; i++){
+      var c = tlClean(lines[i]);
+      if (c && c.length >= 2 && !(TL_GREET_RE.test(c) && c.length < 70)) line = c;
+    }
+    if (!line) line = tlClean(lines[0]) || '(제목 없음)';
+    line = line.replace(/^(?:@all|그리고|아니다|우선|요번에는?|이번에는?)\s+/g, '');
+    line = (line.split(/[.!?](?:\s|$)|。/)[0] || line).trim();
+    line = line.replace(/(?:해\s*줘|해\s*주게|하자|해\s*봐|해\s*주고|부탁해)[.!?~]*$/,'').replace(/[\s.,!?~]+$/,'');
+    return tlCut(line, 28);
+  }
+  function topicTitle(t){
+    var o = state.topicTitles && state.topicTitles[tpKey(t.room, t.root)];
+    return o || topicAutoTitle(t);
+  }
+  /* 주제 안의 흐름 — 지존 지시와 핵심 글만(접수·인사·잡담은 뺀다) */
+  function topicItemKeep(m){
+    if (!m || m.deleted || m.hidden) return false;
+    if (m.sender === '지존') return String(m.content || '').trim().length >= 2;
+    return tlKeep(m);
+  }
+  function topicItemText(m){
+    if (m.sender !== '지존') return tlTitle(m);
+    var t = tlClean(String(m.content || '').split('\n')[0]) || '(지시)';
+    return tlCut(t, 30);
+  }
   function renderTimeline(){
     if (!elTimelineList) return;
-    var list = (state.timeline || []).filter(tlKeep).slice().reverse(); // 핵심만 · 최신 글이 위
-    if (!list.length){
-      elTimelineList.innerHTML = '<div class="tlempty">아직 핵심 글이 없습니다.<br>보고·안건이 올라오면 시간·요약이 여기 쌓입니다.</div>';
-      if (elTimelineHint) elTimelineHint.textContent = '0건';
+    var topics = buildTopics(state.timeline || []);
+    topics.sort(function(a, b){
+      var ra = a.done ? 2 : (a.stale ? 1 : 0), rb = b.done ? 2 : (b.stale ? 1 : 0);
+      if (ra !== rb) return ra - rb; // 진행 중 → 지난 → 완료
+      return b.lastAt - a.lastAt;
+    });
+    if (!topics.length){
+      elTimelineList.innerHTML = '<div class="tlempty">아직 주제가 없습니다.<br>지존께서 일을 시키시면 주제가 여기 쌓입니다.</div>';
+      if (elTimelineHint) elTimelineHint.textContent = '0개';
       return;
     }
-    var html = '', prevDay = '';
-    list.forEach(function(m){
-      var day = kstDay(m.created_at);
-      if (day !== prevDay){
-        html += '<div class="tlday">' + esc(tlDayLabel(m.created_at)) + '</div>';
-        prevDay = day;
+    state.topicOpen = state.topicOpen || {};
+    var html = '', ongoing = 0, doneHead = false, staleHead = false;
+    topics.forEach(function(t){
+      if (!t.done && !t.stale) ongoing++;
+      if (t.stale && !staleHead){ html += '<div class="tlday">지난 주제</div>'; staleHead = true; }
+      if (t.done && !doneHead){ html += '<div class="tlday">완료된 주제</div>'; doneHead = true; }
+      var key = tpKey(t.room, t.root);
+      var open = !!state.topicOpen[key];
+      var flow = t.items.filter(topicItemKeep);
+      var hasActive = t.items.some(function(m){ return m.room === state.room && m.id === state.activeMsg; });
+      html += '<div class="tptopic' + (open ? ' open' : '') + ((t.done || t.stale) ? ' done' : '') + '">' +
+        '<div class="tphead' + (hasActive ? ' active' : '') + '">' +
+          '<button type="button" class="tptoggle" data-tpkey="' + esc(key) + '" title="' + esc('눌러서 이 주제의 흐름 ' + (open ? '접기' : '펼치기')) + '">' +
+            '<span class="chev">▶</span>' +
+            '<span class="tptitle">' + esc(topicTitle(t)) + '</span>' +
+          '</button>' +
+          '<span class="tpmeta">' + (t.agenda ? '<span class="tpbadge ag">안건</span>' : '') +
+            (t.done ? '<span class="tpbadge ok">완료</span>' : (t.stale ? '' : '<span class="tpbadge go">진행</span>')) +
+            '<span class="tptime">' + esc(kstTime(new Date(t.lastAt).toISOString())) + '</span>' +
+            '<button type="button" class="tpedit" data-tpedit="' + esc(key) + '" title="주제 제목 고치기">✎</button>' +
+          '</span>' +
+        '</div>';
+      if (open){
+        html += '<div class="tpflow">';
+        if (!flow.length) html += '<div class="tlempty">핵심 글이 없습니다.</div>';
+        flow.forEach(function(m){
+          var active = (m.room === state.room) && (m.id === state.activeMsg);
+          html += '<button type="button" class="tlrow' + (active ? ' active' : '') + '" data-tlid="' + m.id + '" data-tlroom="' + esc(m.room || '') + '"' +
+            ' title="' + esc(kstFull(m.created_at) + ' · ' + roomLabel(m.room) + ' · ' + (m.sender || '') + ' — 눌러서 이 글로 이동') + '">' +
+            '<span class="tltop"><span class="tltime">' + esc(kstTime(m.created_at)) + '</span>' +
+            '<span class="tlwho" style="color:' + esc(m.color || '#cfd7e4') + '">' + esc(m.sender || '') + '</span>' +
+            (m.room !== state.room ? '<span class="tlroom">' + esc(roomLabel(m.room) || m.room || '') + '</span>' : '') + '</span>' +
+            '<span class="tltitle">' + esc(topicItemText(m)) + '</span></button>';
+        });
+        html += '</div>';
       }
-      var active = (m.room === state.room) && (m.id === state.activeMsg);
-      html += '<button type="button" class="tlrow' + (active ? ' active' : '') + '" data-tlid="' + m.id + '" data-tlroom="' + esc(m.room || '') + '"' +
-        ' title="' + esc(kstFull(m.created_at) + ' · ' + roomLabel(m.room) + ' · ' + (m.sender || '') + ' — 눌러서 이 글로 이동') + '">' +
-        '<span class="tltop"><span class="tltime">' + esc(kstTime(m.created_at)) + '</span>' +
-        '<span class="tlwho" style="color:' + esc(m.color || '#cfd7e4') + '">' + esc(m.sender || '') + '</span>' +
-        '<span class="tlroom">' + esc(roomLabel(m.room) || m.room || '') + '</span></span>' +
-        '<span class="tltitle">' + esc(tlTitle(m)) + '</span></button>';
+      html += '</div>';
     });
     var keep = elTimelineList.scrollTop;
     elTimelineList.innerHTML = html;
     elTimelineList.scrollTop = keep;
-    if (elTimelineHint) elTimelineHint.textContent = '핵심 ' + list.length + '건 · 최신순';
+    if (elTimelineHint) elTimelineHint.textContent = '주제 ' + topics.length + '개 · 진행 ' + ongoing;
+  }
+  function loadTopicTitles(rooms){
+    return Promise.all(rooms.map(function(r){
+      return api('/api/rooms/' + encodeURIComponent(r.slug) + '/topics')
+        .then(function(d){ return {slug: r.slug, list: (d && d.topics) || []}; })
+        .catch(function(){ return {slug: r.slug, list: []}; });
+    })).then(function(res){
+      var map = {};
+      res.forEach(function(x){ x.list.forEach(function(t){ if (t && t.title) map[tpKey(x.slug, t.root_id)] = t.title; }); });
+      state.topicTitles = map;
+    });
   }
   function loadTimeline(){
     var rooms = (state.rooms && state.rooms.length) ? state.rooms.slice() : [{slug: state.room, name: ''}];
@@ -1058,12 +1199,17 @@
         })
         .catch(function(){ return []; });
     });
-    return Promise.all(jobs).then(function(lists){
+    // 제목 고침은 자주 바뀌지 않으니 1분에 한 번만 새로 받는다
+    var needTitles = !state.topicTitlesAt || (Date.now() - state.topicTitlesAt > 60000);
+    var titles = needTitles ? loadTopicTitles(rooms).then(function(){ state.topicTitlesAt = Date.now(); }).catch(function(){}) : Promise.resolve();
+    return Promise.all([Promise.all(jobs), titles]).then(function(res){
+      var lists = res[0];
       var all = [], seen = {};
       lists.forEach(function(list){
         list.forEach(function(m){
-          if (seen[m.id]) return;
-          seen[m.id] = 1;
+          var k = tpKey(m.room, m.id);
+          if (seen[k]) return;
+          seen[k] = 1;
           all.push(m);
         });
       });
@@ -1072,12 +1218,27 @@
         if (ta !== tb) return ta - tb;
         return (a.id || 0) - (b.id || 0);
       });
-      all = all.filter(tlKeep);
       if (all.length > TL_MAX) all = all.slice(all.length - TL_MAX);
       state.timeline = all;
       state.timelineAt = Date.now();
       renderTimeline();
     }).catch(function(){});
+  }
+  function editTopicTitle(key){
+    var i = key.indexOf(':'), room = key.slice(0, i), root = key.slice(i + 1);
+    var topics = buildTopics(state.timeline || []);
+    var t = topics.filter(function(x){ return tpKey(x.room, x.root) === key; })[0];
+    var cur = t ? topicTitle(t) : '';
+    var next = window.prompt('주제 제목 (비우면 자동 제목으로 되돌립니다)', cur);
+    if (next === null) return;
+    next = String(next).replace(/\s+/g, ' ').trim().slice(0, 60);
+    api('/api/rooms/' + encodeURIComponent(room) + '/topics/' + encodeURIComponent(root), {method:'POST', body: JSON.stringify({title: next})})
+      .then(function(){
+        state.topicTitles = state.topicTitles || {};
+        if (next) state.topicTitles[key] = next; else delete state.topicTitles[key];
+        renderTimeline();
+      })
+      .catch(function(e){ setStatus(false, '주제 제목을 고치지 못했습니다 · ' + ((e && e.message) || '다시 시도')); });
   }
   function openTimelineItem(room, id){
     if (!id) return;
@@ -1093,6 +1254,16 @@
   }
   if (elTimelineList){
     elTimelineList.addEventListener('click', function(e){
+      var ed = e.target.closest('[data-tpedit]');
+      if (ed){ e.stopPropagation(); editTopicTitle(ed.getAttribute('data-tpedit')); return; }
+      var tg = e.target.closest('[data-tpkey]');
+      if (tg){
+        var k = tg.getAttribute('data-tpkey');
+        state.topicOpen = state.topicOpen || {};
+        state.topicOpen[k] = !state.topicOpen[k];
+        renderTimeline();
+        return;
+      }
       var row = e.target.closest('[data-tlid]');
       if (!row) return;
       openTimelineItem(row.getAttribute('data-tlroom'), parseInt(row.getAttribute('data-tlid'), 10));
