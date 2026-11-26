@@ -271,6 +271,9 @@
     display:flex;align-items:center;gap:11px;padding:9px 9px;border-radius:12px;
   }
   .prow:hover{background:var(--panel2)}
+  .prow{cursor:pointer}
+  .prow.picked{background:var(--accent-dim);box-shadow:inset 0 0 0 1px #7a3a51}
+  .fchip.fsender{max-width:60vw;overflow:hidden;text-overflow:ellipsis}
   .prow .pav{flex:0 0 42px;width:42px;height:42px;border-radius:14px;position:relative;overflow:hidden;display:grid;place-items:center;background:#333b4a;font-size:19px;border:1px solid #3d4759}
   .prow .pav img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
   .prow .pinfo{min-width:0;flex:1}
@@ -584,6 +587,7 @@
 
     <div class="filterbar" id="filterBar" role="group" aria-label="보기 필터">
       <span class="flabel">보기 필터</span>
+      <button type="button" class="fchip on fsender" id="fSender" hidden title="이 작업자 글만 보는 중 — 눌러서 풀기">👤 <span id="fSenderName"></span>만 <span aria-hidden="true">✕</span></button>
       <button type="button" class="fchip on" data-filter="all" aria-pressed="true">전체<span class="fcnt" id="fCntAll"></span></button>
       <button type="button" class="fchip" data-filter="lord" aria-pressed="false">지존·내 지시만<span class="fcnt" id="fCntLord"></span></button>
       <button type="button" class="fchip" data-filter="agenda" aria-pressed="false">안건만<span class="fcnt" id="fCntAgenda"></span></button>
@@ -708,6 +712,7 @@
     sectMode: 'timeline',
     /* 가운데 보기 필터 — all · lord(지존 지시) · agenda(안건) · report(보고) */
     viewFilter: 'all',
+    senderFilter: '', // 멤버 패널에서 고른 작업자 — 그 사람 글만
     /* 왼쪽 타임라인 — 방들을 합쳐 시간순으로 모은 최근 글 */
     timeline: [],
     timelineAt: 0,
@@ -938,7 +943,9 @@
     var s = String(m.content || '');
     return REPORT_TAG_RE.test(s) || REPORT_BODY_RE.test(s);
   }
+  function isFiltering(){ return state.viewFilter !== 'all' || !!state.senderFilter; }
   function matchFilter(m){
+    if (state.senderFilter && (!m || m.sender !== state.senderFilter)) return false;
     if (state.viewFilter === 'lord') return isLordMsg(m);
     if (state.viewFilter === 'agenda') return isAgendaMsg(m);
     if (state.viewFilter === 'report') return isReportMsg(m);
@@ -947,6 +954,7 @@
   function filterCounts(){
     var c = {all: 0, lord: 0, agenda: 0, report: 0};
     (state.messages || []).forEach(function(m){
+      if (state.senderFilter && m.sender !== state.senderFilter) return;
       c.all++;
       if (isLordMsg(m)) c.lord++;
       if (isAgendaMsg(m)) c.agenda++;
@@ -956,6 +964,12 @@
   }
   function renderFilterBar(){
     if (!elFilterBar) return;
+    var sc = $('fSender');
+    if (sc){
+      sc.hidden = !state.senderFilter;
+      var nm = $('fSenderName');
+      if (nm) nm.textContent = state.senderFilter || '';
+    }
     var c = filterCounts();
     var ids = {all:'fCntAll', lord:'fCntLord', agenda:'fCntAgenda', report:'fCntReport'};
     for (var k in ids){ var el = $(ids[k]); if (el) el.textContent = '(' + (c[k] || 0) + ')'; }
@@ -970,11 +984,22 @@
     if (state.viewFilter === f){ renderFilterBar(); return; }
     state.viewFilter = f;
     renderAll({keepScroll: true});
-    var n = (f === 'all') ? state.messages.length : state.messages.filter(matchFilter).length;
-    setStatus(true, FILTER_LABEL[f] + ' 보기 · ' + n + '건');
+    var n = !isFiltering() ? state.messages.length : state.messages.filter(matchFilter).length;
+    setStatus(true, (state.senderFilter ? state.senderFilter + ' · ' : '') + FILTER_LABEL[f] + ' 보기 · ' + n + '건');
+  }
+  /* 멤버 패널에서 고른 작업자 글만 — 같은 사람을 다시 고르거나 ✕ 를 누르면 풀린다 */
+  function setSenderFilter(name){
+    name = String(name || '');
+    state.senderFilter = (state.senderFilter === name) ? '' : name;
+    renderAll({keepScroll: false});
+    scrollBottom(true);
+    if (typeof renderMembers === 'function') renderMembers();
+    var n = !isFiltering() ? state.messages.length : state.messages.filter(matchFilter).length;
+    setStatus(true, state.senderFilter ? state.senderFilter + ' 글만 보기 · ' + n + '건' : '모든 작업자 글 보기');
   }
   if (elFilterBar){
     elFilterBar.addEventListener('click', function(e){
+      if (e.target.closest('#fSender')){ setSenderFilter(state.senderFilter); return; }
       var b = e.target.closest('[data-filter]');
       if (!b) return;
       setViewFilter(b.getAttribute('data-filter'));
@@ -1339,7 +1364,8 @@
       var detail = idle ? (tok ? '연결됨' : '대기') : relTime(m.last_activity);
       var sub = idle ? (tok ? '토큰 연결' : '') : roomLabel(m.last_room);
       var role = esc(m.role || '') + (person ? ' · 사람' : '') + (tok ? ' · 🔑 토큰' : '');
-      return '<div class="prow">' +
+      var picked = state.senderFilter === m.name;
+      return '<div class="prow' + (picked ? ' picked' : '') + '" role="button" tabindex="0" data-mname="' + esc(m.name) + '" title="' + esc(picked ? '눌러서 모든 글 보기' : '눌러서 ' + m.name + ' 글만 보기') + '">' +
         avatarHtml(m.name, m.emoji, m.avatar, 'pav') +
         '<div class="pinfo"><div class="pname"><span>' + esc(m.name) + '</span><span>' + esc(m.emoji || '') + '</span></div>' +
         '<div class="prole">' + role + '</div></div>' +
@@ -1401,6 +1427,17 @@
   $('membersLink').addEventListener('click', function(e){ e.preventDefault(); closeNav(); openMembers(); });
   $('aiStatBtn').addEventListener('click', function(e){ e.preventDefault(); closeNav(); openMembers(); });
   $('memberClose').addEventListener('click', closeMembers);
+  /* 멤버 줄을 누르면 그 작업자 글만 — 패널은 닫고 대화로 돌아간다 */
+  function onMemberPick(e){
+    var row = e.target.closest('[data-mname]');
+    if (!row) return;
+    if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
+    if (e.type === 'keydown') e.preventDefault();
+    setSenderFilter(row.getAttribute('data-mname'));
+    closeMembers();
+  }
+  elMemberList.addEventListener('click', onMemberPick);
+  elMemberList.addEventListener('keydown', onMemberPick);
   elScrim.addEventListener('click', closeMembers);
   document.addEventListener('keydown', function(e){
     if (e.key !== 'Escape') return;
@@ -1686,9 +1723,9 @@
       return;
     }
     // 보기 필터 — 고른 칩에 맞는 글만 그린다(원본 데이터는 건드리지 않는다)
-    var visible = (state.viewFilter === 'all') ? state.messages : state.messages.filter(matchFilter);
+    var visible = !isFiltering() ? state.messages : state.messages.filter(matchFilter);
     if (!visible.length){
-      elMessages.innerHTML = '<div class="fempty"><span class="big">🔎</span>「' + esc(FILTER_LABEL[state.viewFilter] || '전체') +
+      elMessages.innerHTML = '<div class="fempty"><span class="big">🔎</span>「' + esc((state.senderFilter ? state.senderFilter + ' 글' + (state.viewFilter !== 'all' ? ' · ' : '') : '') + (state.viewFilter !== 'all' || !state.senderFilter ? (FILTER_LABEL[state.viewFilter] || '전체') : '')) +
         '」에 해당하는 글이 이 방에 없습니다.<br>다른 칩을 고르거나 전체로 돌아가세요.' +
         '<br><button type="button" data-filter-reset="all">전체 보기</button></div>';
       updateOlderBar();
@@ -1751,7 +1788,7 @@
     if (!list.length) return;
     if (document.hidden) state.hiddenCount += list.length;
     var stick = nearBottom();
-    var filtering = state.viewFilter !== 'all';
+    var filtering = isFiltering();
     if (filtering){
       // 필터 중에는 새 글을 그대로 붙이지 않고, 조건에 맞는 것만 다시 그린다
       state.messages = state.messages.concat(list);
@@ -1810,7 +1847,7 @@
   }
   elMessages.addEventListener('click', function(e){
     var filterReset = e.target.closest('[data-filter-reset]');
-    if (filterReset){ setViewFilter('all'); return; }
+    if (filterReset){ state.senderFilter = ''; state.viewFilter = '__'; setViewFilter('all'); if (typeof renderMembers === 'function') renderMembers(); return; }
     var decideBtn = e.target.closest('[data-decide]');
     if (decideBtn){
       setDecision(state.room, parseInt(decideBtn.getAttribute('data-decide'), 10), decideBtn.getAttribute('data-decision'));
@@ -2167,8 +2204,9 @@
     if (!id) return;
     state.pendingScrollTo = 0;
     // 지금 고른 보기 필터 때문에 그 글이 가려져 있으면, 전체로 되돌리고 찾는다
-    if (state.viewFilter !== 'all' && !document.getElementById('m' + id)){
+    if (isFiltering() && !document.getElementById('m' + id)){
       state.viewFilter = 'all';
+      state.senderFilter = '';
       renderAll({keepScroll: true});
     }
     state.revealing = true;
