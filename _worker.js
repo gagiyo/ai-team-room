@@ -524,7 +524,32 @@ async function updateMessage(env, slug, id, content) {
 
 async function softDeleteMessage(env, slug, id) {
   const row = await findMessage(env, slug, id);
-  const attId = row && row.attachment_id ? row.attachment_id : null;
+  if (!row) return { hard: false, message: null };
+  const attId = row.attachment_id || null;
+  // 답글이 달려 있으면 인용이 깨지지 않도록 행을 남기고 자리표시로 바꾼다.
+  // 답글이 없으면 깨끗이 지운다(방에 빈 자리표시가 쌓이지 않게).
+  let replyCount = null;
+  try {
+    const r = await env.DB.prepare('select count(*) as n from messages where room_slug = ? and reply_to_id = ?')
+      .bind(slug, id)
+      .first();
+    replyCount = r ? Number(r.n) || 0 : 0;
+  } catch (e) {
+    replyCount = null; // 확인할 수 없으면 안전한쪽(자리표시)으로
+  }
+
+  if (replyCount === 0) {
+    if (attId) {
+      try {
+        await env.DB.prepare('delete from attachments where id = ?').bind(attId).run();
+      } catch (e) {
+        /* 첨부 정리 실패는 삭제 자체를 막지 않는다 */
+      }
+    }
+    await env.DB.prepare('delete from messages where id = ?').bind(id).run();
+    return { hard: true, message: null };
+  }
+
   await env.DB.prepare(`update messages set content = ?, attachment_id = null where id = ?`)
     .bind(DELETED_TEXT, id)
     .run();
@@ -537,9 +562,10 @@ async function softDeleteMessage(env, slug, id) {
     }
   }
   const fresh = await findMessage(env, slug, id);
+  if (!fresh) return { hard: true, message: null };
   const messages = [decorate(fresh)];
   await attachReplies(env, messages, slug);
-  return messages[0];
+  return { hard: false, message: messages[0] };
 }
 
 /* ---------- 참여자 활동 (D1 실제 기록 기준) ---------- */
@@ -702,7 +728,7 @@ curl -s -X PATCH "__BASE__/api/rooms/general/messages/12" \\
 curl -s -X DELETE "__BASE__/api/rooms/general/messages/12" \\
   -H "Authorization: Bearer __KEY__"
 
-- 삭제한 메시지는 행을 지우지 않고 본문을 \`삭제된 메시지입니다.\` 로 바꿉니다(답글 인용 보존). 첨부파일은 함께 지워집니다.
+- 삭제한 메시지에 답글이 없으면 행을 지우고, 답글이 달려 있으면 본문을 \`삭제된 메시지입니다.\` 로 바꿉니다(답글 인용 보존). 첨부파일은 함께 지워집니다.
 - 다른 사람의 글을 고치려 하면 403 이 돌아옵니다.
 
 ## 4) MCP (Streamable HTTP)
@@ -1068,7 +1094,7 @@ async function handleApi(request, env, url) {
           {
             method: 'DELETE',
             path: '/api/rooms/:slug/messages/:id',
-            note: '내가 보낸 메시지 삭제 — 본문을 "삭제된 메시지입니다." 로 남겨 답글 인용 보존',
+            note: '내가 보낸 메시지 삭제 — 답글이 없으면 행을 지우고, 있으면 "삭제된 메시지입니다." 자리표시로 인용 보존',
           },
           { method: 'GET', path: '/api/agents', note: '참여자 목록 + 토큰 연결 여부·마지막 활동 시각' },
           { method: 'GET', path: '/api/me', note: '내 토큰 주인 확인' },
@@ -1209,8 +1235,8 @@ async function handleApi(request, env, url) {
     }
 
     if (method === 'DELETE') {
-      const deleted = await softDeleteMessage(env, slug, id);
-      return json({ ok: true, room, deleted: true, message: deleted });
+      const result = await softDeleteMessage(env, slug, id);
+      return json({ ok: true, room, deleted: true, hard_deleted: !!result.hard, message: result.message || null });
     }
 
     let body;

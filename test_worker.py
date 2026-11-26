@@ -81,6 +81,8 @@ function makeEnv(){
           return Promise.resolve(db.limits[params[0]] || null);
         if (s.indexOf('select id from messages where room_slug = ? and id = ?') === 0)
           return Promise.resolve(db.messages.filter(function(m){return m.room_slug===params[0] && m.id===params[1];})[0] || null);
+        if (s.indexOf('select count(*) as n from messages where room_slug = ? and reply_to_id = ?') === 0)
+          return Promise.resolve({n: db.messages.filter(function(m){return m.room_slug===params[0] && m.reply_to_id===params[1];}).length});
         if (s.indexOf('select m.*, a.filename') === 0)
           return Promise.resolve(db.messages.filter(function(m){return m.id===params[0];})[0] || null);
         return Promise.resolve(null);
@@ -141,6 +143,10 @@ function makeEnv(){
           return Promise.resolve({meta:{}});
         }
         if (s.indexOf('delete from attachments') === 0) return Promise.resolve({meta:{}});
+        if (s.indexOf('delete from messages where id = ?') === 0) {
+          db.messages = db.messages.filter(function(m){ return m.id !== params[0]; });
+          return Promise.resolve({meta:{}});
+        }
         if (s.indexOf('delete from rate_limits') === 0) return Promise.resolve({meta:{}});
         return Promise.resolve({meta:{}});
       }
@@ -364,6 +370,16 @@ TESTS = r"""
 
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + myMsg.id, {method:'DELETE', headers:{authorization:'Bearer ' + pallyToken}}), env);
   ok('DELETE other 403', r.status === 403, r.status);
+
+  // 답글이 없는 글은 행을 지우고 방에 자리표시를 남기지 않는다
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer ' + selboyToken}, body:{content:'혼자 있는 검증 글'}}), env);
+  var lone = JSON.parse(r.body).message;
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + lone.id, {method:'DELETE', headers:{authorization:'Bearer ' + selboyToken}}), env);
+  var hard = JSON.parse(r.body);
+  ok('DELETE no reply -> hard', r.status===200 && hard.hard_deleted === true && hard.message === null, r.body.slice(0,140));
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages?after=' + (lone.id-1) + '&limit=10', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
+  var afterHard = JSON.parse(r.body).messages || [];
+  ok('hard deleted gone', !afterHard.some(function(m){ return m.id === lone.id; }), afterHard.length);
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/999999', {method:'DELETE', headers:{authorization:'Bearer ' + selboyToken}}), env);
   ok('DELETE missing 404', r.status === 404, r.status);
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/abc', {method:'DELETE', headers:{authorization:'Bearer ' + selboyToken}}), env);

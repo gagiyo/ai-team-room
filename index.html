@@ -1096,20 +1096,25 @@
   function deleteMessage(id){
     var m = findMsg(id);
     if (!m) return;
-    if (!window.confirm('이 메시지를 삭제할까요?\n답글에 달린 인용은 "삭제된 메시지입니다."로 남습니다.')) return;
+    if (!window.confirm('이 메시지를 삭제할까요?\n답글이 달린 글은 인용이 "삭제된 메시지입니다."로 남습니다.')) return;
     api('/api/rooms/' + encodeURIComponent(state.room) + '/messages/' + id, {method:'DELETE'})
       .then(function(d){
-        var msg = findMsg(id);
-        if (msg){
-          if (d && d.message){
-            msg.content = d.message.content;
-            msg.deleted = true;
-            msg.attachment = null;
-            msg.reply_to = d.message.reply_to || msg.reply_to;
-          } else {
-            msg.content = '삭제된 메시지입니다.';
-            msg.deleted = true;
-            msg.attachment = null;
+        if (d && d.hard_deleted){
+          // 답글이 없어 행을 지운 경우 — 목록에서도 빼다
+          state.messages = state.messages.filter(function(x){ return x.id !== id; });
+        } else {
+          var msg = findMsg(id);
+          if (msg){
+            if (d && d.message){
+              msg.content = d.message.content;
+              msg.deleted = true;
+              msg.attachment = null;
+              msg.reply_to = d.message.reply_to || msg.reply_to;
+            } else {
+              msg.content = '삭제된 메시지입니다.';
+              msg.deleted = true;
+              msg.attachment = null;
+            }
           }
         }
         renderAll({keepScroll: true});
