@@ -44,7 +44,7 @@
 
 const SERVER_NAME = 'ai-team-room';
 const SERVER_TITLE = 'AI 팀 회의실';
-const SERVER_VERSION = '1.5.0'; // 2026-11-26 안건 승인·미승인·보류(지존 id 87·91·92) + 왼쪽 안건 요약
+const SERVER_VERSION = '1.6.0'; // 2026-11-26 왼쪽 회의실/타임라인 아코디언 + 가운데 보기 필터(지존 id 105)
 
 // 사람(최종 결정) — AI 숫자 집계에서 뺀다.
 const HUMAN_NAME = '지존';

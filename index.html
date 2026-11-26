@@ -71,7 +71,49 @@
   .room .rname{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .room .rdesc{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .room .cnt{margin-left:auto;background:var(--accent);color:#fff;font-size:10.5px;font-weight:700;border-radius:9px;padding:1px 6px;min-width:18px;text-align:center}
-  .roomsline{flex:1}
+
+  /* ---------- 왼쪽 프레임: 회의실 / 타임라인 아코디언 ---------- */
+  .sect{display:flex;flex-direction:column;min-height:0}
+  .sect > .sechead{
+    display:flex;align-items:center;gap:6px;width:100%;flex:0 0 auto;
+    background:#20252f;border:1px solid #333b4a;border-radius:9px;padding:5px 7px;
+    color:#cfd7e4;text-align:left;
+  }
+  .sect > .sechead:hover{background:#2a3140;border-color:#46506a;color:#fff}
+  .sect > .sechead .chev{flex:0 0 auto;width:9px;font-size:9px;color:var(--muted);transition:transform .16s ease}
+  .sect.open > .sechead .chev{transform:rotate(90deg);color:var(--accent)}
+  .sect > .sechead b{font-size:12.5px;letter-spacing:-0.01em}
+  .sect > .sechead .sechint{margin-left:auto;font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:58%}
+  .sect.open > .sechead{background:#2b3240;border-color:#4a5468}
+  .sect > .secbody{display:none;min-height:0;overflow:hidden;flex-direction:column;gap:8px;margin-top:7px}
+  .sect.open > .secbody{display:flex}
+  .sect.roomsect{flex:0 0 auto;min-height:0}
+  .sect.roomsect > .secbody{overflow-y:auto;overscroll-behavior:contain;padding-bottom:2px}
+  .sect.tlsect{flex:1 1 auto;min-height:0}
+  .sect.tlsect > .secbody{flex:1 1 auto}
+  /* 회의실을 펼치면 타임라인은 몇 줄만 남기고 줄어든다 */
+  .sidebar.mode-rooms .roomsect{flex:1 1 auto}
+  .sidebar.mode-rooms .tlsect{flex:0 0 auto;max-height:40vh}
+  .sidebar.mode-rooms .tlsect > .secbody{max-height:210px}
+  .roomsect .rooms{overflow:visible}
+  .roomsect .agendas{max-height:none;flex:0 0 auto}
+  .roomsect .aglist{overflow:visible;flex:0 0 auto}
+  .timeline{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;display:flex;flex-direction:column;gap:1px;padding:0 1px 2px}
+  .tlday{font-size:10px;color:var(--muted);letter-spacing:.03em;padding:5px 6px 3px;border-bottom:1px dashed #333b4a;margin:4px 0 2px}
+  .tlday:first-child{padding-top:0;margin-top:0}
+  .tlrow{
+    display:flex;flex-direction:column;gap:1px;width:100%;text-align:left;background:transparent;
+    border:0;border-radius:8px;padding:5px 6px;color:#cfd7e4;
+  }
+  .tlrow:hover{background:var(--panel2)}
+  .tlrow.active{background:var(--accent-dim)}
+  .tlrow .tltop{display:flex;align-items:center;gap:5px;min-width:0;font-size:10.5px;color:var(--muted);line-height:1.3}
+  .tlrow .tltime{flex:0 0 auto;font-variant-numeric:tabular-nums}
+  .tlrow .tlwho{flex:0 1 auto;max-width:72px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tlrow .tlroom{flex:0 0 auto;margin-left:auto;font-size:9.5px;border:1px solid var(--line);border-radius:6px;padding:0 4px;color:#8f9bb0}
+  .tlrow .tltitle{font-size:12px;line-height:1.45;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;word-break:break-word}
+  .tlrow.active .tltitle{color:#fff}
+  .tlempty{font-size:11.5px;color:#8f9bb0;padding:8px 6px;line-height:1.55}
 
   /* ---------- 왼쪽 프레임: 안건 · 미결정 요약 ---------- */
   .agendas{flex:0 1 auto;display:flex;flex-direction:column;min-height:0;max-height:38vh;border-top:1px solid var(--line);padding-top:10px;gap:6px}
@@ -128,6 +170,25 @@
   .topright{margin-left:auto;display:flex;align-items:center;gap:8px}
   .pill{font-size:11.5px;color:var(--muted);border:1px solid var(--line);border-radius:20px;padding:3px 9px;white-space:nowrap}
   .pill.live{color:#9ae6b4;border-color:#2f5c41}
+
+  /* ---------- 가운데 상단: 보기 필터 칩 ---------- */
+  .filterbar{
+    display:flex;align-items:center;gap:6px;padding:7px 16px;border-bottom:1px solid var(--line);
+    background:rgba(30,35,45,.6);overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:none;
+  }
+  .filterbar::-webkit-scrollbar{display:none}
+  .filterbar .flabel{flex:0 0 auto;font-size:10.5px;color:var(--muted);letter-spacing:.05em;margin-right:1px}
+  .fchip{
+    flex:0 0 auto;background:#2b3240;border:1px solid var(--line);border-radius:20px;
+    padding:3px 10px;font-size:12px;color:#b9c4d4;white-space:nowrap;line-height:1.5;
+  }
+  .fchip:hover{border-color:#4a5468;color:#fff}
+  .fchip.on{background:var(--accent-dim);border-color:#7a3a51;color:#ffd9e6;font-weight:700}
+  .fchip .fcnt{margin-left:4px;font-size:10px;font-weight:400;color:var(--muted)}
+  .fchip.on .fcnt{color:#ffc9d9}
+  .fempty{margin:auto;text-align:center;color:var(--muted);font-size:13px;line-height:1.7;padding:26px 12px}
+  .fempty .big{font-size:26px;display:block;margin-bottom:6px}
+  .fempty button{margin-top:10px;background:#2b3240;border:1px solid var(--line);border-radius:20px;padding:5px 14px;font-size:12px;color:#dbe3ee}
   .members-btn{
     display:flex;align-items:center;gap:7px;background:var(--panel2);border:1px solid var(--line);
     border-radius:20px;padding:4px 11px 4px 6px;font-size:12.5px;color:#cdd6e4;
@@ -378,6 +439,8 @@
     body.nav-open .navscrim{display:block}
     body.nav-open .menu-btn{color:var(--text)}
     .menu-btn{display:block}
+    .filterbar{padding:6px 10px;gap:5px}
+    .fchip{padding:3px 9px;font-size:11.5px}
     .messages{padding:12px 10px 6px}
     .msg{padding:7px 6px}
     .msgacts{opacity:1;position:static;margin-top:4px;gap:10px}
@@ -396,7 +459,7 @@
 </head>
 <body>
 <div id="app">
-  <aside class="sidebar" id="sidebar">
+  <aside class="sidebar mode-timeline" id="sidebar">
     <div class="brand">
       <span class="logo">🌸</span>
       <div class="brandtext">
@@ -406,18 +469,34 @@
         </button>
       </div>
     </div>
-    <div class="rooms" id="roomList"><div class="label">회의실</div></div>
-    <div class="agendas" id="agendaBox">
-      <div class="aghead"><b>안건</b><span class="agsum" id="agendaSum"></span></div>
-      <div id="agendaAlarms"></div>
-      <div class="agtabs" id="agendaTabs">
-        <button type="button" data-adec="rejected" class="on">미승인 <b id="cntRejected">0</b></button>
-        <button type="button" data-adec="held">보류 <b id="cntHeld">0</b></button>
-        <button type="button" data-adec="approved">승인 <b id="cntApproved">0</b></button>
+    <section class="sect roomsect" id="roomSect" data-sect="rooms">
+      <button type="button" class="sechead" id="roomSectHead" aria-expanded="false" aria-controls="roomBody" title="회의실 펼치기 — 방 목록과 안건 요약">
+        <span class="chev">▶</span><b>회의실</b><span class="sechint" id="roomSectHint"></span>
+      </button>
+      <div class="secbody" id="roomBody">
+        <div class="rooms" id="roomList"><div class="label">방 목록</div></div>
+        <div class="agendas" id="agendaBox">
+          <div class="aghead"><b>안건</b><span class="agsum" id="agendaSum"></span></div>
+          <div id="agendaAlarms"></div>
+          <div class="agtabs" id="agendaTabs">
+            <button type="button" data-adec="rejected" class="on">미승인 <b id="cntRejected">0</b></button>
+            <button type="button" data-adec="held">보류 <b id="cntHeld">0</b></button>
+            <button type="button" data-adec="approved">승인 <b id="cntApproved">0</b></button>
+          </div>
+          <div class="aglist" id="agendaList"></div>
+        </div>
       </div>
-      <div class="aglist" id="agendaList"></div>
-    </div>
-    <div class="roomsline"></div>
+    </section>
+
+    <section class="sect tlsect open" id="timelineSect" data-sect="timeline">
+      <button type="button" class="sechead" id="timelineSectHead" aria-expanded="true" aria-controls="timelineBody" title="타임라인 — 회의실 접고 크게 보기">
+        <span class="chev">▶</span><b>타임라인</b><span class="sechint" id="timelineHint">불러오는 중…</span>
+      </button>
+      <div class="secbody" id="timelineBody">
+        <div class="timeline" id="timelineList"></div>
+      </div>
+    </section>
+
     <div class="sidefoot">
       <div class="who"><span class="dot" id="statusDot"></span><span id="statusText">연결 중…</span></div>
       <a href="#" id="membersLink">멤버 상태 (마지막 활동)</a>
@@ -440,6 +519,14 @@
         <span class="pill live" id="livePill">실시간 · 4초</span>
       </div>
     </header>
+
+    <div class="filterbar" id="filterBar" role="group" aria-label="보기 필터">
+      <span class="flabel">보기 필터</span>
+      <button type="button" class="fchip on" data-filter="all" aria-pressed="true">전체<span class="fcnt" id="fCntAll"></span></button>
+      <button type="button" class="fchip" data-filter="lord" aria-pressed="false">지존·내 지시만<span class="fcnt" id="fCntLord"></span></button>
+      <button type="button" class="fchip" data-filter="agenda" aria-pressed="false">안건만<span class="fcnt" id="fCntAgenda"></span></button>
+      <button type="button" class="fchip" data-filter="report" aria-pressed="false">보고만<span class="fcnt" id="fCntReport"></span></button>
+    </div>
 
     <div class="msgwrap">
       <div class="olderbar" id="olderBar" hidden>
@@ -554,7 +641,15 @@
     agendaAlarms: 0,
     agendaFilter: 'rejected',
     agendaDraft: false,
-    pendingScrollTo: 0
+    pendingScrollTo: 0,
+    /* 왼쪽 프레임 아코디언 — 'timeline'(초기) 또는 'rooms' 하나만 넓게 */
+    sectMode: 'timeline',
+    /* 가운데 보기 필터 — all · lord(지존 지시) · agenda(안건) · report(보고) */
+    viewFilter: 'all',
+    /* 왼쪽 타임라인 — 방들을 합쳐 시간순으로 모은 최근 글 */
+    timeline: [],
+    timelineAt: 0,
+    activeMsg: 0
   };
 
   var $ = function(id){ return document.getElementById(id); };
@@ -568,7 +663,11 @@
       elMain = document.querySelector('.main'),
       elMentionPop = $('mentionPop'), elOlderBar = $('olderBar'), elOlderBtn = $('olderBtn'),
       elAgendaList = $('agendaList'), elAgendaTabs = $('agendaTabs'), elAgendaSum = $('agendaSum'),
-      elAgendaAlarms = $('agendaAlarms'), elAgendaBtn = $('agendaBtn');
+      elAgendaAlarms = $('agendaAlarms'), elAgendaBtn = $('agendaBtn'),
+      elSidebar = $('sidebar'), elRoomSect = $('roomSect'), elTimelineSect = $('timelineSect'),
+      elRoomSectHead = $('roomSectHead'), elTimelineSectHead = $('timelineSectHead'),
+      elRoomSectHint = $('roomSectHint'), elTimelineHint = $('timelineHint'),
+      elTimelineList = $('timelineList'), elFilterBar = $('filterBar');
 
   /* ---------- helpers ---------- */
   function esc(s){
@@ -675,6 +774,212 @@
   function isNavOpen(){ return document.body.classList.contains('nav-open'); }
   function closeNav(){ document.body.classList.remove('nav-open'); }
   function toggleNav(){ document.body.classList.toggle('nav-open'); }
+
+  /* ---------- 왼쪽 프레임: 회의실 / 타임라인 아코디언 ---------- */
+  /* 초기 상태는 타임라인 — 회의실 하부 내용은 접어 두고 시간·제목 목록이 먼저 넓게 보인다 */
+  function setSect(mode){
+    state.sectMode = (mode === 'rooms') ? 'rooms' : 'timeline';
+    var roomsOpen = state.sectMode === 'rooms';
+    if (elSidebar){
+      elSidebar.classList.toggle('mode-rooms', roomsOpen);
+      elSidebar.classList.toggle('mode-timeline', !roomsOpen);
+    }
+    if (elRoomSect) elRoomSect.classList.toggle('open', roomsOpen);
+    if (elTimelineSect) elTimelineSect.classList.toggle('open', !roomsOpen);
+    if (elRoomSectHead){
+      elRoomSectHead.setAttribute('aria-expanded', roomsOpen ? 'true' : 'false');
+      elRoomSectHead.title = roomsOpen ? '회의실 접기 — 타임라인 넓게 보기' : '회의실 펼치기 — 방 목록과 안건 요약';
+    }
+    if (elTimelineSectHead){
+      elTimelineSectHead.setAttribute('aria-expanded', roomsOpen ? 'false' : 'true');
+      elTimelineSectHead.title = roomsOpen ? '타임라인 펼치기 — 회의실 접고 크게 보기' : '타임라인 — 회의실 접고 크게 보기';
+    }
+    if (!roomsOpen && elTimelineList) elTimelineList.scrollTop = 0;
+  }
+  function renderSectHints(){
+    if (!elRoomSectHint) return;
+    var rooms = (state.rooms || []).length;
+    var c = state.agendaCounts || {};
+    var pending = (c.rejected || 0) + (c.held || 0);
+    elRoomSectHint.textContent = rooms ? ('방 ' + rooms + (pending ? ' · 안건 ' + pending : '')) : '';
+  }
+  if (elRoomSectHead) elRoomSectHead.addEventListener('click', function(){ setSect('rooms'); });
+  if (elTimelineSectHead) elTimelineSectHead.addEventListener('click', function(){ setSect('timeline'); });
+
+  /* ---------- 가운데 보기 필터 (전체 · 지존 지시 · 안건 · 보고) ---------- */
+  /* 기존 글은 그대로 두고 화면에서만 판별한다. 안건은 서버 판별식과 같은 기준을 쓴다. */
+  var FILTER_LABEL = {all:'전체', lord:'지존·내 지시만', agenda:'안건만', report:'보고만'};
+  var AGENDA_TAG_RE = /\[(?:안건|제안|승인\s*요청|승인요청|결재\s*요청|결재요청)\]/;
+  var AGENDA_LINE_RE = /(?:^|\n)[ \t]*(?:[-*•]\s*)?(?:안건|제안|승인\s*요청|승인요청|결재\s*요청|결재요청)\s*[:：]/;
+  var REPORT_TAG_RE = /\[(?:보고|보고서|완료|패치\s*완료|배포\s*완료|검수\s*완료|구현\s*완료|감사|알림|공지|긴급)\]/;
+  var REPORT_BODY_RE = /(?:배포|패치|검수|구현|수정|처리|작업|연결|개선|정리)[^\n]{0,30}(?:완료|마쳤|마무리|끝냈|반영했|적용했)|(?:완료|마쳤|마무리|끝냈)[^\n]{0,14}(?:아뢰|보고|하옵|했사옵|되었사옵|했습니다|되었습니다)|(?:^|\n)[ \t]*(?:보고|보고서)[ \t]*[:：]|보고[^\n]{0,8}(?:올리|드리|아뢰|하옵|합니다)/;
+  function isLordMsg(m){ return !!m && m.sender === '지존'; }
+  function isAgendaMsg(m){
+    if (!m) return false;
+    if (m.agenda) return true;
+    var s = String(m.content || '');
+    return AGENDA_TAG_RE.test(s) || AGENDA_LINE_RE.test(s);
+  }
+  function isReportMsg(m){
+    if (!m || m.sender === '지존' || m.deleted) return false;
+    var s = String(m.content || '');
+    return REPORT_TAG_RE.test(s) || REPORT_BODY_RE.test(s);
+  }
+  function matchFilter(m){
+    if (state.viewFilter === 'lord') return isLordMsg(m);
+    if (state.viewFilter === 'agenda') return isAgendaMsg(m);
+    if (state.viewFilter === 'report') return isReportMsg(m);
+    return true;
+  }
+  function filterCounts(){
+    var c = {all: 0, lord: 0, agenda: 0, report: 0};
+    (state.messages || []).forEach(function(m){
+      c.all++;
+      if (isLordMsg(m)) c.lord++;
+      if (isAgendaMsg(m)) c.agenda++;
+      if (isReportMsg(m)) c.report++;
+    });
+    return c;
+  }
+  function renderFilterBar(){
+    if (!elFilterBar) return;
+    var c = filterCounts();
+    var ids = {all:'fCntAll', lord:'fCntLord', agenda:'fCntAgenda', report:'fCntReport'};
+    for (var k in ids){ var el = $(ids[k]); if (el) el.textContent = '(' + (c[k] || 0) + ')'; }
+    Array.prototype.forEach.call(elFilterBar.querySelectorAll('[data-filter]'), function(b){
+      var on = b.getAttribute('data-filter') === state.viewFilter;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+  }
+  function setViewFilter(f){
+    if (!FILTER_LABEL[f]) f = 'all';
+    if (state.viewFilter === f){ renderFilterBar(); return; }
+    state.viewFilter = f;
+    renderAll({keepScroll: true});
+    var n = (f === 'all') ? state.messages.length : state.messages.filter(matchFilter).length;
+    setStatus(true, FILTER_LABEL[f] + ' 보기 · ' + n + '건');
+  }
+  if (elFilterBar){
+    elFilterBar.addEventListener('click', function(e){
+      var b = e.target.closest('[data-filter]');
+      if (!b) return;
+      setViewFilter(b.getAttribute('data-filter'));
+    });
+  }
+
+  /* ---------- 왼쪽 타임라인 — 모든 방의 최근 글을 시간순으로 ---------- */
+  var TL_PER_ROOM = 25, TL_MAX = 60;
+  function tlDayLabel(iso){
+    try {
+      var key = function(d){ return new Date(d).toLocaleDateString('ko-KR', {timeZone:'Asia/Seoul'}); };
+      var now = new Date();
+      if (key(iso) === key(now)) return '오늘';
+      if (key(iso) === key(new Date(now.getTime() - 86400000))) return '어제';
+      return new Date(iso).toLocaleDateString('ko-KR', {timeZone:'Asia/Seoul', month:'numeric', day:'numeric', weekday:'short'});
+    } catch(e){ return ''; }
+  }
+  /* 타임라인 제목 — 첫 줄 요약(마크다운 기호는 걷어낸다) */
+  function tlTitle(m){
+    var raw = String(m.content || '').replace(/\r/g, '').replace(/^[ \t]*```[^\n]*$/gm, '');
+    if (!raw.trim()){
+      if (m.attachment) return '📎 ' + (m.attachment.filename || '첨부');
+      return m.deleted ? '삭제된 메시지입니다.' : '(내용 없음)';
+    }
+    var lines = raw.split('\n'), line = '';
+    for (var i = 0; i < lines.length; i++){
+      var t = lines[i]
+        .replace(/```/g, '')
+        .replace(/`/g, '')
+        .replace(/\*\*/g, '')
+        .replace(/^[\s>#]+/, '')
+        .replace(/^[-*•]\s+/, '')
+        .trim();
+      if (t){ line = t; break; }
+    }
+    line = line.replace(/\s+/g, ' ');
+    if (!line) return '(제목 없음)';
+    if (line.length > 62) line = line.slice(0, 61).replace(/[\s.,]+$/, '') + '…';
+    return line;
+  }
+  function renderTimeline(){
+    if (!elTimelineList) return;
+    var list = (state.timeline || []).slice().reverse(); // 최신 글이 위
+    if (!list.length){
+      elTimelineList.innerHTML = '<div class="tlempty">아직 글이 없습니다.<br>방에 글이 올라오면 시간·제목이 여기 쌓입니다.</div>';
+      if (elTimelineHint) elTimelineHint.textContent = '0건';
+      return;
+    }
+    var html = '', prevDay = '';
+    list.forEach(function(m){
+      var day = kstDay(m.created_at);
+      if (day !== prevDay){
+        html += '<div class="tlday">' + esc(tlDayLabel(m.created_at)) + '</div>';
+        prevDay = day;
+      }
+      var active = (m.room === state.room) && (m.id === state.activeMsg);
+      html += '<button type="button" class="tlrow' + (active ? ' active' : '') + '" data-tlid="' + m.id + '" data-tlroom="' + esc(m.room || '') + '"' +
+        ' title="' + esc(kstFull(m.created_at) + ' · ' + roomLabel(m.room) + ' · ' + (m.sender || '') + ' — 눌러서 이 글로 이동') + '">' +
+        '<span class="tltop"><span class="tltime">' + esc(kstTime(m.created_at)) + '</span>' +
+        '<span class="tlwho" style="color:' + esc(m.color || '#cfd7e4') + '">' + esc(m.sender || '') + '</span>' +
+        '<span class="tlroom">' + esc(roomLabel(m.room) || m.room || '') + '</span></span>' +
+        '<span class="tltitle">' + esc(tlTitle(m)) + '</span></button>';
+    });
+    var keep = elTimelineList.scrollTop;
+    elTimelineList.innerHTML = html;
+    elTimelineList.scrollTop = keep;
+    if (elTimelineHint) elTimelineHint.textContent = '최근 ' + list.length + '건 · 최신순';
+  }
+  function loadTimeline(){
+    var rooms = (state.rooms && state.rooms.length) ? state.rooms.slice() : [{slug: state.room, name: ''}];
+    if (!rooms.length) return Promise.resolve();
+    var jobs = rooms.map(function(r){
+      var slug = r.slug;
+      return api('/api/rooms/' + encodeURIComponent(slug) + '/messages?limit=' + TL_PER_ROOM)
+        .then(function(d){
+          return (d.messages || []).map(function(m){ m.room = slug; return m; });
+        })
+        .catch(function(){ return []; });
+    });
+    return Promise.all(jobs).then(function(lists){
+      var all = [], seen = {};
+      lists.forEach(function(list){
+        list.forEach(function(m){
+          if (seen[m.id]) return;
+          seen[m.id] = 1;
+          all.push(m);
+        });
+      });
+      all.sort(function(a, b){
+        var ta = Date.parse(a.created_at) || 0, tb = Date.parse(b.created_at) || 0;
+        if (ta !== tb) return ta - tb;
+        return (a.id || 0) - (b.id || 0);
+      });
+      if (all.length > TL_MAX) all = all.slice(all.length - TL_MAX);
+      state.timeline = all;
+      state.timelineAt = Date.now();
+      renderTimeline();
+    }).catch(function(){});
+  }
+  function openTimelineItem(room, id){
+    if (!id) return;
+    closeNav(); // 모바일에서는 사이드바가 자연스럽게 닫힌다
+    state.activeMsg = id;
+    if (!room || room === state.room){
+      if (!scrollToMsg(id)) revealMsg(id);
+      renderTimeline();
+      return;
+    }
+    state.pendingScrollTo = id; // 다른 방 — 전환 뒤 그 글로
+    switchRoom(room);
+  }
+  if (elTimelineList){
+    elTimelineList.addEventListener('click', function(e){
+      var row = e.target.closest('[data-tlid]');
+      if (!row) return;
+      openTimelineItem(row.getAttribute('data-tlroom'), parseInt(row.getAttribute('data-tlid'), 10));
+    });
+  }
 
   /* ---------- 멤버 상태 패널 ---------- */
   function relTime(iso){
@@ -876,6 +1181,7 @@
       });
     });
     updateTitle();
+    renderSectHints();
   }
   function loadRooms(){
     return api('/api/rooms').then(function(d){
@@ -908,6 +1214,7 @@
     updateTitle();
     loadRooms().catch(function(){});
     loadMessages(true);
+    renderTimeline();
   }
   $('menuBtn').addEventListener('click', function(e){ e.stopPropagation(); toggleNav(); });
   /* 사이드바가 열려 있을 때 바깥(왼쪽 메뉴 밖)을 누르면 무조건 닫혀서 채팅 화면으로 돌아온다 */
@@ -1010,13 +1317,23 @@
   function renderAll(opts){
     opts = opts || {};
     var fromBottom = elMessages.scrollHeight - elMessages.scrollTop;
+    renderFilterBar();
     if (!state.messages.length){
       elMessages.innerHTML = '<div class="empty"><span class="big">💬</span>아직 메시지가 없습니다.<br>첫 인사를 남겨보세요.</div>';
       updateOlderBar();
       return;
     }
+    // 보기 필터 — 고른 칩에 맞는 글만 그린다(원본 데이터는 건드리지 않는다)
+    var visible = (state.viewFilter === 'all') ? state.messages : state.messages.filter(matchFilter);
+    if (!visible.length){
+      elMessages.innerHTML = '<div class="fempty"><span class="big">🔎</span>「' + esc(FILTER_LABEL[state.viewFilter] || '전체') +
+        '」에 해당하는 글이 이 방에 없습니다.<br>다른 칩을 고르거나 전체로 돌아가세요.' +
+        '<br><button type="button" data-filter-reset="all">전체 보기</button></div>';
+      updateOlderBar();
+      return;
+    }
     var html = '', prevDay = '';
-    state.messages.forEach(function(m){
+    visible.forEach(function(m){
       html += msgHtml(m, prevDay);
       prevDay = kstDay(m.created_at);
     });
@@ -1034,11 +1351,11 @@
   }
   /* 지난 대화 더 보기 — 지금 목록의 가장 앞 id 앞으로 60개씩 거슬러 올라간다 */
   function loadOlder(){
-    if (state.loadingOlder || !state.hasMore || !state.messages.length) return;
+    if (state.loadingOlder || !state.hasMore || !state.messages.length) return Promise.resolve();
     state.loadingOlder = true;
     updateOlderBar();
     var before = state.messages[0].id;
-    api('/api/rooms/' + encodeURIComponent(state.room) + '/messages?before=' + before + '&limit=60')
+    return api('/api/rooms/' + encodeURIComponent(state.room) + '/messages?before=' + before + '&limit=60')
       .then(function(d){
         state.loadingOlder = false;
         state.hasMore = !!d.has_more;
@@ -1065,6 +1382,15 @@
     if (!list.length) return;
     if (document.hidden) state.hiddenCount += list.length;
     var stick = nearBottom();
+    var filtering = state.viewFilter !== 'all';
+    if (filtering){
+      // 필터 중에는 새 글을 그대로 붙이지 않고, 조건에 맞는 것만 다시 그린다
+      state.messages = state.messages.concat(list);
+      renderAll({keepScroll: !stick});
+      if (stick) scrollBottom(true);
+      updateTitle();
+      return;
+    }
     var prevDay = state.messages.length ? kstDay(state.messages[state.messages.length - 1].created_at) : '';
     var html = '';
     list.forEach(function(m){
@@ -1073,9 +1399,12 @@
     });
     var emptyEl = elMessages.querySelector('.empty');
     if (emptyEl) emptyEl.remove();
+    var femptyEl = elMessages.querySelector('.fempty');
+    if (femptyEl) femptyEl.remove();
     elMessages.insertAdjacentHTML('beforeend', html);
     state.messages = state.messages.concat(list);
     if (stick) scrollBottom(true);
+    renderFilterBar();
     updateTitle();
   }
   function loadMessages(initial){
@@ -1090,9 +1419,7 @@
         state.hasMore = !!d.has_more;
         renderAll();
         if (state.pendingScrollTo){
-          var target = state.pendingScrollTo;
-          state.pendingScrollTo = 0;
-          scrollToMsg(target);
+          revealMsg(state.pendingScrollTo);
         }
       } else if (list.length){
         state.lastId = list[list.length - 1].id;
@@ -1113,6 +1440,8 @@
     });
   }
   elMessages.addEventListener('click', function(e){
+    var filterReset = e.target.closest('[data-filter-reset]');
+    if (filterReset){ setViewFilter('all'); return; }
     var decideBtn = e.target.closest('[data-decide]');
     if (decideBtn){
       setDecision(state.room, parseInt(decideBtn.getAttribute('data-decide'), 10), decideBtn.getAttribute('data-decision'));
@@ -1396,6 +1725,7 @@
         ? '미승인 ' + (counts.rejected || 0) + ' · 보류 ' + (counts.held || 0)
         : '미승인·보류 없음';
     }
+    renderSectHints();
     // 보류 30일이 지나 알람이 온 건 — 눈에 보이게 따로 알린다.
     if (elAgendaAlarms){
       elAgendaAlarms.innerHTML = state.agendaAlarms
@@ -1460,7 +1790,26 @@
     el.classList.remove('flash');
     void el.offsetWidth;
     el.classList.add('flash');
+    state.activeMsg = id;
     return true;
+  }
+  /* 타임라인·안건에서 고른 글이 지금 목록에 없으면 이전 대화를 몇 페이지 더 불러와 찾는다 */
+  function revealMsg(id, tries){
+    if (!id) return;
+    state.pendingScrollTo = 0;
+    // 지금 고른 보기 필터 때문에 그 글이 가려져 있으면, 전체로 되돌리고 찾는다
+    if (state.viewFilter !== 'all' && !document.getElementById('m' + id)){
+      state.viewFilter = 'all';
+      renderAll({keepScroll: true});
+    }
+    if (scrollToMsg(id)){ renderTimeline(); return; }
+    if (tries === undefined) tries = 3;
+    if (tries <= 0 || !state.hasMore){
+      setStatus(false, '#' + id + ' 글이 지금 목록에 없습니다 — 이전 대화 더 보기로 찾아보세요');
+      return;
+    }
+    state.loadingOlder = false;
+    loadOlder().then(function(){ revealMsg(id, tries - 1); });
   }
   function openAgenda(room, id){
     if (!room) return;
@@ -1692,6 +2041,7 @@
           if (d.message.agenda) loadAgendas();
         }
         loadRooms().catch(function(){});
+        loadTimeline(); // 왼쪽 타임라인에도 방금 글이 바로 보이게
       })
       .catch(function(err){
         setStatus(false, '전송 실패 · ' + (err.message || '다시 시도'));
@@ -1777,7 +2127,7 @@
     updateTitle();
     renderSenders();
     loadMe();
-    loadRooms().catch(function(){ setStatus(false, '연결 끊김'); });
+    loadRooms().then(function(){ loadTimeline(); }).catch(function(){ setStatus(false, '연결 끊김'); });
     loadMessages(true);
     loadMembers();
     loadAgendas();
@@ -1791,6 +2141,7 @@
       if (tick % 5 === 0){
         loadRooms().catch(function(){});
         loadAgendas();
+        loadTimeline();
       }
       // AI 숫자는 패널을 닫아 두어도 15초마다 실제 연결 상태로 갱신한다
       if (Date.now() - state.membersAt > 15000) loadMembers();
@@ -1802,6 +2153,7 @@
         loadMessages(false);
         loadRooms().catch(function(){});
         loadAgendas();
+        loadTimeline();
       }
     });
   }
