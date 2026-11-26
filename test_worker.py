@@ -98,6 +98,25 @@ function makeEnv(){
         else if (/^(m\.)?pinned = \?$/.test(pr)) { v = params[i++]; rows = rows.filter(function(r){ return (r.pinned ? 1 : 0) === (v ? 1 : 0); }); }
         else if (/^(m\.)?reply_to_id = \?$/.test(pr)) { v = params[i++]; rows = rows.filter(function(r){ return r.reply_to_id === v; }); }
         else if (/^(m\.)?created_at < \?$/.test(pr)) { v = params[i++]; rows = rows.filter(function(r){ return String(r.created_at) < String(v); }); }
+        /* 2026-11-26 안건·결정 열 — 실제 SQLite 와 같은 뜻으로 거른다(모르는 조건을 건너뛰면 삭제 대상을 잘못 넓힌다). */
+        else if (/^(?:m\.)?agenda = \?$/.test(pr)) { v = params[i++]; rows = rows.filter(function(r){ return r.agenda != null && Number(r.agenda) === Number(v); }); }
+        else if (/^(?:m\.)?agenda = -?\d+$/.test(pr)) { v = Number(pr.replace(/^.*agenda = /, '')); rows = rows.filter(function(r){ return r.agenda != null && Number(r.agenda) === v; }); }
+        else if (/^(?:m\.)?agenda is null$/.test(pr)) rows = rows.filter(function(r){ return r.agenda == null; });
+        else if (/^(?:m\.)?agenda is not null$/.test(pr)) rows = rows.filter(function(r){ return r.agenda != null; });
+        else if (/^(?:m\.)?agenda <> -?\d+$/.test(pr)) { v = Number(pr.replace(/^.*agenda <> /, '')); rows = rows.filter(function(r){ return r.agenda == null || Number(r.agenda) !== v; }); }
+        else if (/^(?:m\.)?approved_at is null$/.test(pr)) rows = rows.filter(function(r){ return !r.approved_at; });
+        else if (/^(?:m\.)?approved_at is not null$/.test(pr)) rows = rows.filter(function(r){ return !!r.approved_at; });
+        else if (/^(?:m\.)?rejected_at is null$/.test(pr)) rows = rows.filter(function(r){ return !r.rejected_at; });
+        else if (/^(?:m\.)?rejected_at is not null$/.test(pr)) rows = rows.filter(function(r){ return !!r.rejected_at; });
+        else if (/^(?:m\.)?held_at is null$/.test(pr)) rows = rows.filter(function(r){ return !r.held_at; });
+        else if (/^(?:m\.)?held_at is not null$/.test(pr)) rows = rows.filter(function(r){ return !!r.held_at; });
+        else if (/^(?:m\.)?hold_notified_at is null$/.test(pr)) rows = rows.filter(function(r){ return !r.hold_notified_at; });
+        else if (/^(?:m\.)?hold_notified_at is not null$/.test(pr)) rows = rows.filter(function(r){ return !!r.hold_notified_at; });
+        /* 승인된 안건은 보관 정리에서 뺀다 — (approved_at is null or agenda is null or agenda <> 1) */
+        else if (/^\(.*approved_at is null or .*agenda is null or .*agenda <> 1.*\)$/.test(pr)) rows = rows.filter(function(r){ return !r.approved_at || r.agenda == null || Number(r.agenda) !== 1; });
+        /* 안건 요약 — (m.agenda = 1 or approved_at is not null or rejected_at is not null or held_at is not null) */
+        else if (/^\(.*agenda = 1 or .*\)$/.test(pr)) rows = rows.filter(function(r){ return Number(r.agenda) === 1 || !!r.approved_at || !!r.rejected_at || !!r.held_at; });
+        else if (/^1 = 1$/.test(pr)) { /* 항상 참 */ }
       }
     }
     var om = s.match(/order by\s+(?:m\.)?id\s+(asc|desc)/);
@@ -578,6 +597,216 @@ TESTS = r"""
   ok('CORS allows PATCH', (r.headers['Access-Control-Allow-Methods']||'').indexOf('PATCH') !== -1, r.headers['Access-Control-Allow-Methods']);
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages?limit=1', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
   ok('list returns oldest_id', JSON.parse(r.body).oldest_id > 0, r.body.slice(0,120));
+
+  /* ================= 2026-11-26 추가: 안건 · 승인/미승인/보류 · 왼쪽 요약 · 수명 주기 ================= */
+  var env2 = makeEnv();
+  var db2 = env2.DB._raw;
+  function isoAgo(days){ return new Date(Date.now() - days * 86400000).toISOString(); }
+  function put2(room, sender, content, extra){
+    var row = {id: db2.nextId++, room_slug: room || 'general', sender: sender || '외문집사', content: content,
+      reply_to_id: null, attachment_id: null, created_at: new Date().toISOString(), pinned: 0, retention_kind: 'normal',
+      hidden_at: null, deleted_at: null, agenda: null, approved_at: null, approved_by: null, rejected_at: null,
+      rejected_by: null, held_at: null, held_by: null, hold_notified_at: null};
+    for (var k in (extra || {})) row[k] = extra[k];
+    db2.messages.push(row);
+    return row;
+  }
+  function call2(path, opts){ return __handler.fetch(makeReq('https://x.pages.dev' + path, opts), env2); }
+
+  // 1) 토큰 — 개인 토큰(연금술사 · CEO=지존)은 공용 키로만 발급
+  var tkRes = await call2('/api/admin/tokens', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{agents:['연금술사','CEO']}});
+  var tks = JSON.parse(tkRes.body).tokens || [];
+  var allyTok = tks[0] && tks[0].token, ceoTok = tks[1] && tks[1].token;
+  ok('agenda: mint two tokens', tkRes.status === 201 && tks.length === 2, tkRes.status + ' ' + tkRes.body.slice(0,120));
+
+  // 2) /api/me 의 can_approve — 지존(웹 입장 키 · CEO 토큰)만 true
+  var meAlly = JSON.parse((await call2('/api/me', {headers:{authorization:'Bearer ' + allyTok}})).body);
+  var meCeo = JSON.parse((await call2('/api/me', {headers:{authorization:'Bearer ' + ceoTok}})).body);
+  var meApi = JSON.parse((await call2('/api/me', {headers:{authorization:'Bearer legacy-shared-key'}})).body);
+  var meRoom = JSON.parse((await call2('/api/me', {headers:{'x-room-key':'room-pass'}})).body);
+  ok('agenda: can_approve is sovereign only',
+    meAlly.can_approve === false && meCeo.can_approve === true && meApi.can_approve === false && meRoom.can_approve === true,
+    JSON.stringify({ally: meAlly.can_approve, ceo: meCeo.can_approve, api: meApi.can_approve, room: meRoom.can_approve}));
+  ok('agenda: approver_name', meCeo.approver_name === '지존' && meAlly.approver_name === null && meCeo.agent === '지존', meCeo.approver_name + ' / ' + meAlly.approver_name);
+
+  // 3) 안건 판별 — [안건] 자동 · 안건: 줄 · agenda:true/false
+  var postAgenda = await call2('/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer ' + allyTok}, body:{content:'[안건] 서버 교체 예산 승인 요청'}});
+  var msgAgenda = JSON.parse(postAgenda.body).message;
+  ok('agenda: body tag detected', postAgenda.status === 201 && msgAgenda.agenda === true && msgAgenda.decision === 'rejected', postAgenda.status + ' ' + postAgenda.body.slice(0,180));
+  ok('agenda: default rejected + 7 days', msgAgenda.days_left === 7 && msgAgenda.deadline_at && msgAgenda.lifecycle && msgAgenda.lifecycle.stage === 'rejected', JSON.stringify({d: msgAgenda.days_left, st: msgAgenda.lifecycle && msgAgenda.lifecycle.stage}));
+  ok('agenda: stored as agenda=1', db2.messages.filter(function(m){ return m.id === msgAgenda.id; })[0].agenda === 1, db2.messages.filter(function(m){ return m.id === msgAgenda.id; })[0].agenda);
+
+  var postPlain = await call2('/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer ' + allyTok}, body:{content:'오늘 점심 메뉴 정하실 분'}});
+  var msgPlain = JSON.parse(postPlain.body).message;
+  ok('agenda: plain is not agenda', postPlain.status === 201 && msgPlain.agenda === false && msgPlain.decision === null && msgPlain.deadline_at == null, postPlain.body.slice(0,160));
+
+  var postLine = await call2('/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer ' + allyTok}, body:{content:'안건: 새 방 하나 만들어 주세요'}});
+  var msgLine = JSON.parse(postLine.body).message;
+  ok('agenda: line prefix detected', msgLine.agenda === true, postLine.body.slice(0,160));
+
+  var postOff = await call2('/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer ' + allyTok}, body:{content:'[안건] 이건 그냥 공지입니다', agenda:false}});
+  var msgOff = JSON.parse(postOff.body).message;
+  ok('agenda: agenda=false overrides tag', msgOff.agenda === false && msgOff.decision === null, postOff.body.slice(0,160));
+
+  var postOn = await call2('/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer ' + allyTok}, body:{content:'표시 없이 보내는 안건', agenda:true}});
+  var msgOn = JSON.parse(postOn.body).message;
+  ok('agenda: agenda=true without tag', msgOn.agenda === true && msgOn.decision === 'rejected', postOn.body.slice(0,160));
+
+  // 4) 안건 표시 PATCH — 쓴 사람 또는 지존만
+  var patchOwn = await call2('/api/rooms/general/messages/' + msgPlain.id, {method:'PATCH', headers:{authorization:'Bearer ' + allyTok}, body:{agenda:true}});
+  ok('agenda: author can mark', patchOwn.status === 200 && JSON.parse(patchOwn.body).message.agenda === true, patchOwn.status + ' ' + patchOwn.body.slice(0,140));
+  var patchOther = await call2('/api/rooms/general/messages/' + msgAgenda.id, {method:'PATCH', headers:{authorization:'Bearer ' + ceoTok}, body:{agenda:false}});
+  ok('agenda: sovereign can unmark other', patchOther.status === 200 && JSON.parse(patchOther.body).message.agenda === false, patchOther.status + ' ' + patchOther.body.slice(0,140));
+  var patchBack = await call2('/api/rooms/general/messages/' + msgAgenda.id, {method:'PATCH', headers:{authorization:'Bearer ' + ceoTok}, body:{agenda:true}});
+  ok('agenda: re-mark', patchBack.status === 200 && JSON.parse(patchBack.body).message.agenda === true, patchBack.status);
+
+  // 5) 결정 권한 — 다른 참여자 토큰·공용 키는 403
+  var decAlly = await call2('/api/rooms/general/messages/' + msgAgenda.id + '/decision', {method:'POST', headers:{authorization:'Bearer ' + allyTok}, body:{decision:'approved'}});
+  ok('agenda: agent decision 403', decAlly.status === 403 && JSON.parse(decAlly.body).error === 'forbidden', decAlly.status + ' ' + decAlly.body.slice(0,160));
+  var decApi = await call2('/api/rooms/general/messages/' + msgAgenda.id + '/decision', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{decision:'approved'}});
+  ok('agenda: api key decision 403', decApi.status === 403, decApi.status + ' ' + decApi.body.slice(0,160));
+
+  // 6) 지존 결정 — 웹 입장 키 · CEO 토큰 모두 가능, 기록·기한이 함께 바뀐다
+  var decOk = await call2('/api/rooms/general/messages/' + msgAgenda.id + '/decision', {method:'POST', headers:{'x-room-key':'room-pass'}, body:{decision:'approved'}});
+  var decMsg = JSON.parse(decOk.body).message;
+  ok('agenda: sovereign approve', decOk.status === 200 && decMsg.decision === 'approved' && decMsg.approved === true && decMsg.approved_by === '지존' && !!decMsg.approved_at, decOk.status + ' ' + decOk.body.slice(0,200));
+  ok('agenda: approved has no deadline', decMsg.days_left === null && decMsg.deadline_at === null, JSON.stringify({d: decMsg.days_left, dl: decMsg.deadline_at}));
+  var decHeld = await call2('/api/rooms/general/messages/' + msgOn.id + '/decision', {method:'POST', headers:{authorization:'Bearer ' + ceoTok}, body:{decision:'보류'}});
+  var heldMsg = JSON.parse(decHeld.body).message;
+  ok('agenda: sovereign hold (korean)', decHeld.status === 200 && heldMsg.decision === 'held' && heldMsg.held === true && heldMsg.held_by === '지존', decHeld.status + ' ' + decHeld.body.slice(0,200));
+  ok('agenda: held deadline 30+7', heldMsg.lifecycle && heldMsg.lifecycle.alarm_days_left === 30 && heldMsg.days_left === 37 && !heldMsg.alarm_due, JSON.stringify({alarm: heldMsg.lifecycle && heldMsg.lifecycle.alarm_days_left, d: heldMsg.days_left}));
+  // 상태는 서로 배타적 — 보류에서 승인으로 바꾸면 보류 기록이 지워진다
+  var decFlip = await call2('/api/rooms/general/messages/' + msgOn.id + '/decision', {method:'POST', headers:{authorization:'Bearer ' + ceoTok}, body:{decision:'approved'}});
+  var flipMsg = JSON.parse(decFlip.body).message;
+  ok('agenda: decisions exclusive', flipMsg.decision === 'approved' && flipMsg.held_at === null && flipMsg.held_by === null && !!flipMsg.approved_at, JSON.stringify({d: flipMsg.decision, h: flipMsg.held_at, a: flipMsg.approved_at}));
+
+  // 7) 잘못된 요청 — 안건 아님 400 · 값 오류 400 · 없는 글 404 · 삭제된 글 400
+  var decNotAgenda = await call2('/api/rooms/general/messages/' + msgOff.id + '/decision', {method:'POST', headers:{'x-room-key':'room-pass'}, body:{decision:'approved'}});
+  ok('agenda: not_agenda 400', decNotAgenda.status === 400 && JSON.parse(decNotAgenda.body).error === 'not_agenda', decNotAgenda.status + ' ' + decNotAgenda.body.slice(0,140));
+  var decBad = await call2('/api/rooms/general/messages/' + msgAgenda.id + '/decision', {method:'POST', headers:{'x-room-key':'room-pass'}, body:{decision:'아무거나'}});
+  ok('agenda: bad decision 400', decBad.status === 400 && JSON.parse(decBad.body).error === 'invalid_request', decBad.status);
+  var decMissing = await call2('/api/rooms/general/messages/999999/decision', {method:'POST', headers:{'x-room-key':'room-pass'}, body:{decision:'approved'}});
+  ok('agenda: missing message 404', decMissing.status === 404, decMissing.status);
+  var decNoRoom = await call2('/api/rooms/nope/messages/1/decision', {method:'POST', headers:{'x-room-key':'room-pass'}, body:{decision:'approved'}});
+  ok('agenda: missing room 404', decNoRoom.status === 404, decNoRoom.status);
+
+  // 8) 숏컷 /approve — POST=승인, DELETE=미승인
+  var apShort = await call2('/api/rooms/general/messages/' + msgOn.id + '/approve', {method:'POST', headers:{'x-room-key':'room-pass'}});
+  ok('agenda: /approve POST', apShort.status === 200 && JSON.parse(apShort.body).message.decision === 'approved', apShort.status + ' ' + apShort.body.slice(0,140));
+  var apUndo = await call2('/api/rooms/general/messages/' + msgOn.id + '/approve', {method:'DELETE', headers:{'x-room-key':'room-pass'}});
+  ok('agenda: /approve DELETE', apUndo.status === 200 && JSON.parse(apUndo.body).message.decision === 'rejected' && JSON.parse(apUndo.body).message.approved_at === null, apUndo.status + ' ' + apUndo.body.slice(0,140));
+
+  // 9) MCP send_room_message 의 agenda 인자
+  var mcpAgenda = await call2('/mcp', {method:'POST', headers:{authorization:'Bearer ' + allyTok}, body:{jsonrpc:'2.0', id:91, method:'tools/call', params:{name:'send_room_message', arguments:{room:'general', content:'표시 없는 MCP 안건', agenda:true}}}});
+  var mcpText = JSON.parse(mcpAgenda.body).result.content[0].text;
+  ok('agenda: mcp agenda arg', JSON.parse(mcpText).message.agenda === true, mcpText.slice(0,160));
+
+  // 10) /api/agendas — 모든 참여자 읽기, 건수·필터·기한
+  var agAll = await call2('/api/agendas?decision=all', {headers:{authorization:'Bearer ' + allyTok}});
+  var agJson = JSON.parse(agAll.body);
+  var realAgendas = db2.messages.filter(function(m){ return m.agenda === 1 && m.content !== '삭제된 메시지입니다.'; });
+  var handCount = {approved:0, rejected:0, held:0};
+  realAgendas.forEach(function(m){
+    if (m.approved_at) handCount.approved++; else if (m.held_at) handCount.held++; else handCount.rejected++;
+  });
+  ok('agenda: list readable by agent', agAll.status === 200 && agJson.ok === true, agAll.status);
+  ok('agenda: counts match db', agJson.counts.approved === handCount.approved && agJson.counts.rejected === handCount.rejected && agJson.counts.held === handCount.held,
+    JSON.stringify({got: agJson.counts, want: handCount}));
+  ok('agenda: list rows carry deadline', agJson.agendas.length === realAgendas.length && agJson.agendas.every(function(a){ return a.decision === 'approved' ? a.deadline_at === null : !!a.deadline_at; }), JSON.stringify({n: agJson.agendas.length, want: realAgendas.length}));
+  ok('agenda: policy in response', agJson.policy.reject_days === 7 && agJson.policy.hold_days === 30 && agJson.policy.hold_alarm_after_days === 7, JSON.stringify(agJson.policy));
+  var agRej = JSON.parse((await call2('/api/agendas?decision=rejected', {headers:{authorization:'Bearer ' + allyTok}})).body);
+  ok('agenda: decision filter', agRej.agendas.every(function(a){ return a.decision === 'rejected'; }) && agRej.agendas.length === handCount.rejected, agRej.agendas.length + ' / ' + handCount.rejected);
+  var agRoom = JSON.parse((await call2('/api/rooms/general/agendas', {headers:{authorization:'Bearer ' + allyTok}})).body);
+  ok('agenda: per-room list', agRoom.ok === true && agRoom.room === 'general' && agRoom.agendas.length === realAgendas.length, agRoom.ok + ' ' + (agRoom.agendas || []).length);
+  var agNoRoom = await call2('/api/rooms/nope/agendas', {headers:{authorization:'Bearer ' + allyTok}});
+  ok('agenda: per-room 404', agNoRoom.status === 404, agNoRoom.status);
+  ok('agenda: list not part of after-cursor', JSON.parse((await call2('/api/rooms/general/messages?after=' + (msgAgenda.id - 1), {headers:{authorization:'Bearer ' + allyTok}})).body).messages.some(function(m){ return m.agenda === true; }), 'after list carries agenda flag');
+
+  // 11) 예전 DB(승인 열 없음) — 예전 기능은 그대로, 승인 기능만 503
+  var envOld = makeEnv();
+  var origPrepare = envOld.DB.prepare;
+  envOld.DB.prepare = function(sql){
+    if (String(sql).indexOf('select agenda, approved_at') === 0) throw new Error('no such column: agenda');
+    return origPrepare(sql);
+  };
+  var oldPost = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{sender:'지존', content:'예전 DB 글 [안건] 표시'}}), envOld);
+  ok('agenda: legacy db still posts', oldPost.status === 201 || oldPost.status === 403, oldPost.status + ' ' + oldPost.body.slice(0,140));
+  var oldPost2 = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {method:'POST', headers:{'x-room-key':'room-pass'}, body:{sender:'지존', content:'예전 DB 글 [안건] 표시'}}), envOld);
+  var oldMsg2 = JSON.parse(oldPost2.body).message;
+  ok('agenda: legacy db web post ok', oldPost2.status === 201 && oldMsg2.agenda === true && oldMsg2.decision === 'rejected' && oldMsg2.days_left === 7, oldPost2.status + ' ' + JSON.stringify({a: oldMsg2.agenda, d: oldMsg2.decision}));
+  var oldList = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {headers:{authorization:'Bearer legacy-shared-key'}}), envOld);
+  ok('agenda: legacy db list ok', oldList.status === 200 && JSON.parse(oldList.body).messages.length === 1, oldList.status);
+  var oldClean = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/cleanup', {headers:{authorization:'Bearer legacy-shared-key'}}), envOld);
+  var oldCleanJson = JSON.parse(oldClean.body);
+  ok('agenda: legacy db cleanup ok', oldClean.status === 200 && oldCleanJson.agenda && oldCleanJson.agenda.to_delete.count === 0, oldClean.status + ' ' + oldClean.body.slice(0,160));
+  var oldDecide = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/1/decision', {method:'POST', headers:{'x-room-key':'room-pass'}, body:{decision:'approved'}}), envOld);
+  ok('agenda: legacy db decision 503', oldDecide.status === 503 && JSON.parse(oldDecide.body).error === 'unavailable', oldDecide.status);
+  var oldAgendas = await __handler.fetch(makeReq('https://x.pages.dev/api/agendas', {headers:{authorization:'Bearer legacy-shared-key'}}), envOld);
+  ok('agenda: legacy db agendas 503', oldAgendas.status === 503, oldAgendas.status);
+
+  // 12) ALTER TABLE — 첫 요청에서 8개 열만 더한다
+  var envCols = makeEnv();
+  await __handler.fetch(makeReq('https://x.pages.dev/api/health'), envCols);
+  await __handler.fetch(makeReq('https://x.pages.dev/api/rooms', {headers:{authorization:'Bearer legacy-shared-key'}}), envCols);
+  var addedCols = Object.keys(envCols.DB._raw.cols).filter(function(c){ return ['agenda','approved_at','approved_by','rejected_at','rejected_by','held_at','held_by','hold_notified_at'].indexOf(c) !== -1; });
+  ok('agenda: alters 8 columns', addedCols.length === 8, JSON.stringify(Object.keys(envCols.DB._raw.cols)));
+
+  // 13) 수명 주기 — 미승인 7일 삭제 · 보류 30일 알람 + 7일 삭제 · 승인/자동인식 예전 글 보존
+  var env3 = makeEnv();
+  var db3 = env3.DB._raw;
+  function put3(id, daysAgo, content, extra){
+    var row = {id: id, room_slug:'general', sender:'외문집사', content: content, reply_to_id: null, attachment_id: null,
+      created_at: isoAgo(daysAgo), pinned: 0, retention_kind: 'normal', hidden_at: null, deleted_at: null,
+      agenda: null, approved_at: null, approved_by: null, rejected_at: null, rejected_by: null, held_at: null, held_by: null, hold_notified_at: null};
+    for (var k in (extra || {})) row[k] = extra[k];
+    db3.messages.push(row);
+    db3.nextId = Math.max(db3.nextId, id + 1);
+    return row;
+  }
+  function call3(path, opts){ return __handler.fetch(makeReq('https://x.pages.dev' + path, opts), env3); }
+  var lcRejected = put3(101, 8, '[안건] 8일 지난 미승인 안건', {agenda:1});
+  var lcRejectedOld = put3(102, 20, '[안건] 미승인 기록이 8일 전인 안건', {agenda:1, rejected_at: isoAgo(8), rejected_by:'지존'});
+  put3(103, 8, '위 안건에 달린 답글', {reply_to_id: 102});
+  var lcHeldAlarm = put3(104, 31, '[안건] 보류 31일 — 알람 차례', {agenda:1, held_at: isoAgo(31), held_by:'지존'});
+  var lcHeldExpired = put3(105, 40, '[안건] 보류 알람 뒤 9일 — 삭제 차례', {agenda:1, held_at: isoAgo(40), held_by:'지존', hold_notified_at: isoAgo(9)});
+  var lcApproved = put3(106, 100, '[안건] 오래전 승인된 안건', {agenda:1, approved_at: isoAgo(95), approved_by:'지존'});
+  var lcAutoOld = put3(107, 20, '[안건] 예전 자동 인식 글(열 없던 시절)', {agenda: null});
+  var lcPlainOld = put3(108, 95, '그냥 오래된 일반 글');
+
+  var lcPrev = await call3('/api/admin/cleanup', {headers:{authorization:'Bearer legacy-shared-key'}});
+  var lcPrevJson = JSON.parse(lcPrev.body);
+  var prevIds = lcPrevJson.agenda.to_delete.preview.map(function(x){ return x.id; }).sort(function(a,b){ return a-b; });
+  ok('agenda: cleanup preview is dry-run', lcPrev.status === 200 && lcPrevJson.dry_run === true, lcPrev.status + ' ' + lcPrev.body.slice(0,120));
+  ok('agenda: preview to_delete exact', prevIds.join(',') === '101,102,105', prevIds.join(','));
+  ok('agenda: preview holds alarm', lcPrevJson.agenda.held.alarms.length === 1 && lcPrevJson.agenda.held.alarms[0].id === 104, JSON.stringify(lcPrevJson.agenda.held.alarms));
+  ok('agenda: preview keeps approved/auto/plain', lcPrevJson.agenda.to_delete.preview.every(function(x){ return [106,107,108].indexOf(x.id) === -1; }), 'ok');
+  ok('agenda: preview touched nothing', db3.messages.length === 8 && db3.messages.filter(function(m){ return m.hold_notified_at; }).length === 1 && !db3.messages.filter(function(m){ return m.hidden_at; }).length, 'rows ' + db3.messages.length);
+  var lcTokRes = await call3('/api/admin/tokens', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{agents:['연금술사']}});
+  var lcAllyTok = JSON.parse(lcTokRes.body).tokens[0].token;
+  var lcAgent = await call3('/api/admin/cleanup', {headers:{authorization:'Bearer ' + lcAllyTok}});
+  ok('agenda: cleanup agent 403', lcAgent.status === 403, lcAgent.status);
+
+  var lcRun = await call3('/api/admin/cleanup', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{purge:true}});
+  var lcRunJson = JSON.parse(lcRun.body);
+  var left = db3.messages.map(function(m){ return m.id; });
+  ok('agenda: cleanup alarmed held', lcRunJson.agenda.alarmed === 1 && !!db3.messages.filter(function(m){ return m.id === 104; })[0].hold_notified_at, JSON.stringify({alarmed: lcRunJson.agenda.alarmed}));
+  ok('agenda: cleanup deleted 3', lcRunJson.agenda.deleted.count === 3 && left.indexOf(101) === -1 && left.indexOf(105) === -1 && left.indexOf(102) !== -1, JSON.stringify({deleted: lcRunJson.agenda.deleted.rows, left: left}));
+  ok('agenda: reply kept as placeholder', db3.messages.filter(function(m){ return m.id === 102; })[0].content === '삭제된 메시지입니다.', db3.messages.filter(function(m){ return m.id === 102; })[0].content);
+  ok('agenda: approved kept out of retention', left.indexOf(106) !== -1 && !db3.messages.filter(function(m){ return m.id === 106; })[0].hidden_at, JSON.stringify({has: left.indexOf(106), hidden: db3.messages.filter(function(m){ return m.id === 106; })[0].hidden_at}));
+  ok('agenda: auto-detected old kept', left.indexOf(107) !== -1 && !db3.messages.filter(function(m){ return m.id === 107; })[0].hidden_at, 'auto old kept');
+  ok('agenda: plain old still hidden', !!db3.messages.filter(function(m){ return m.id === 108; })[0].hidden_at, 'plain hidden');
+
+  var lcAgain = await call3('/api/admin/cleanup', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{purge:true}});
+  ok('agenda: cleanup idempotent', JSON.parse(lcAgain.body).agenda.deleted.count === 0 && JSON.parse(lcAgain.body).agenda.alarmed === 0, lcAgain.body.slice(0,120));
+
+  // 알람 뒤 7일이 지난 보류 건은 다음 정리에서 지워진다
+  var heldRow = db3.messages.filter(function(m){ return m.id === 104; })[0];
+  heldRow.hold_notified_at = isoAgo(8);
+  var lcAfter = await call3('/api/admin/cleanup', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{purge:true}});
+  ok('agenda: held deleted after alarm+7', JSON.parse(lcAfter.body).agenda.deleted.count === 1 && db3.messages.map(function(m){ return m.id; }).indexOf(104) === -1, lcAfter.body.slice(0,140));
+
+  var lcOff = await call3('/api/admin/cleanup?agenda_lifecycle=false', {headers:{authorization:'Bearer legacy-shared-key'}});
+  ok('agenda: lifecycle can be off', JSON.parse(lcOff.body).agenda.to_delete.count === 0, lcOff.body.slice(0,140));
 
   globalThis.__out = out;
 })().catch(function(e){ globalThis.__out = [{name:'EXCEPTION', ok:false, extra:String((e && e.stack) || e)}]; });
