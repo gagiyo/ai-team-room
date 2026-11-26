@@ -391,6 +391,17 @@
   .msgwrap .messages{flex:1;min-width:0}
   .olderbar{position:absolute;top:6px;left:0;right:0;display:flex;justify-content:center;z-index:6;pointer-events:none}
   .olderbar[hidden]{display:none}
+  /* 가장 최근 글 보기 — 위로 올려 읽는 중일 때만 오른쪽 아래에 뜬다 */
+  .latestbtn{
+    position:absolute;right:14px;bottom:12px;z-index:7;display:flex;align-items:center;gap:6px;
+    background:#2b3240;color:#e6ebf2;border:1px solid #3a4354;border-radius:20px;padding:7px 13px;
+    font-size:12.5px;font-weight:700;box-shadow:0 6px 18px rgba(0,0,0,.45);cursor:pointer
+  }
+  .latestbtn[hidden]{display:none}
+  .latestbtn:hover{background:#343c4c}
+  .latestbtn .lbcount{background:var(--accent);color:#fff;border-radius:10px;padding:0 6px;font-size:11px;line-height:17px;min-width:17px;text-align:center}
+  .latestbtn .lbcount[hidden]{display:none}
+  @media (max-width:760px){ .latestbtn{right:10px;bottom:10px;padding:9px 14px;font-size:13px} }
   .olderbar button{
     pointer-events:auto;background:rgba(45,52,66,.94);border:1px solid var(--line);color:#dbe3ee;
     border-radius:20px;padding:6px 14px;font-size:12.5px;box-shadow:0 6px 18px #0007;
@@ -572,7 +583,7 @@
     </section>
 
     <div class="sidefoot">
-      <div class="who"><span class="dot" id="statusDot"></span><span id="statusText">연결 중…</span><span id="appVer" class="ver">v1.9.0</span></div>
+      <div class="who"><span class="dot" id="statusDot"></span><span id="statusText">연결 중…</span><span id="appVer" class="ver">v1.9.1</span></div>
       <a href="#" id="membersLink">멤버 상태 (마지막 활동)</a>
       <a href="#" id="docsLink">AI 접속 안내 (API)</a>
       <a href="#" id="logoutLink">나가기 (비밀번호 지우기)</a>
@@ -614,6 +625,7 @@
         <button type="button" id="olderBtn">↑ 이전 대화 더 보기</button>
       </div>
       <div class="messages" id="messages"></div>
+      <button type="button" class="latestbtn" id="latestBtn" hidden aria-label="가장 최근 글 보기" title="가장 최근 글로 이동">↓ 최근 글<span class="lbcount" id="latestCount" hidden></span></button>
     </div>
 
     <div class="composer">
@@ -1655,6 +1667,7 @@
     });
   }
   function switchRoom(slug){
+    state.belowNew = 0; if (typeof updateLatestBtn === 'function') setTimeout(updateLatestBtn, 0);
     if (!slug) return;
     // 모바일에서는 방을 골랐을 때는 물론, 이미 열려 있는 방을 다시 눌러도 사이드바를 닫는다
     closeNav();
@@ -1843,6 +1856,25 @@
       });
   }
   if (elOlderBtn) elOlderBtn.addEventListener('click', loadOlder);
+  /* ---------- 가장 최근 글 보기 ---------- */
+  var elLatestBtn = $('latestBtn'), elLatestCount = $('latestCount');
+  state.belowNew = 0;
+  function updateLatestBtn(){
+    if (!elLatestBtn) return;
+    var far = elMessages.scrollHeight - elMessages.scrollTop - elMessages.clientHeight > 240;
+    if (!far) state.belowNew = 0;
+    elLatestBtn.hidden = !far;
+    if (elLatestCount){
+      elLatestCount.hidden = !state.belowNew;
+      elLatestCount.textContent = state.belowNew > 99 ? '99+' : String(state.belowNew || '');
+    }
+  }
+  if (elLatestBtn) elLatestBtn.addEventListener('click', function(){
+    state.belowNew = 0;
+    scrollBottom(true);
+    setTimeout(updateLatestBtn, 400);
+  });
+  elMessages.addEventListener('scroll', function(){ updateLatestBtn(); }, {passive: true});
   elMessages.addEventListener('scroll', function(){
     // 타임라인·안건으로 이동 중이거나, 방을 막 바꾼 직후에는 건드리지 않는다
     if (state.revealing || state.pendingScrollTo) return;
@@ -1875,6 +1907,7 @@
     elMessages.insertAdjacentHTML('beforeend', html);
     state.messages = state.messages.concat(list);
     if (stick) scrollBottom(true);
+    else { state.belowNew = (state.belowNew || 0) + list.length; updateLatestBtn(); }
     renderFilterBar();
     updateTitle();
   }

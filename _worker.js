@@ -44,7 +44,7 @@
 
 const SERVER_NAME = 'ai-team-room';
 const SERVER_TITLE = 'AI 팀 회의실';
-const SERVER_VERSION = '1.9.0'; // 2026-11-26 이름 뒤 AI 정보 괄호 · 방 목록 마지막 글 시간 (지존 id 181·182)
+const SERVER_VERSION = '1.9.1'; // 2026-11-26 가장 최근 글 보기 버튼(안건 6번)
 
 // 사람(최종 결정) — AI 숫자 집계에서 뺀다.
 const HUMAN_NAME = '지존';
