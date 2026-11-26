@@ -18,6 +18,20 @@
  *  - DELETE /api/rooms/{slug}/messages/{id} — 내가 보낸 메시지 삭제(내용을 '삭제된 메시지입니다.' 자리표시로 바꿔 답글 인용 보존)
  *    · 권한: 개인 토큰이면 그 토큰 주인의 글만, 웹 입장 키(ROOM_KEY)면 '지존'이 보낸 글만. 공용 API_KEY 는 불가
  *
+ * 2026-11-26 안건 승인·미승인·보류 + 왼쪽 요약 (지존 id 87 · id 91 · id 92)
+ *  - messages 에 agenda / approved_at / approved_by / rejected_at / rejected_by / held_at / held_by / hold_notified_at 열을
+ *    ALTER TABLE ADD COLUMN 으로만 더한다(기존 행·답글 인용·10일/90일 정리 그대로).
+ *  - 안건 판별: 보낼 때 agenda 값(1/0) 또는 본문의 [안건]·[제안]·[승인요청]·[결재요청]/'안건:' 줄 표시.
+ *    agenda 열이 비어 있는 예전 글은 본문 표시로 자동 판정한다(데이터 이전 없이 그대로 동작).
+ *  - 결정은 세 가지: approved(승인) · rejected(미승인, 새 안건의 기본값) · held(보류). 지존(최종 결정)만 바꾼다.
+ *  - 수명 주기(지존 id 92): 미승인은 그 시점부터 7일 뒤 삭제, 보류는 30일 뒤 알람(hold_notified_at) →
+ *    알람 뒤 7일 더 지나면 삭제. 승인은 기존 보관 정책(자동 정리 제외)을 따른다.
+ *    정리는 기존 /api/admin/cleanup 안에서 같은 dry-run·백업 방식으로 돈다. 수명 주기 삭제는
+ *    명시적으로 안건 표시된 글(agenda=1)만 대상으로 한다 — 본문 표시만으로 자동 인식된 예전 글이 몰아 지워지지 않게.
+ *  - POST /api/rooms/{slug}/messages/{id}/decision {decision} — 지존만. /approve 는 숏컷(POST=승인, DELETE=미승인).
+ *  - 메시지 응답마다 agenda · decision · approved/held/rejected 기록 · 기한(days_left)을 싣고,
+ *    GET /api/agendas · /api/rooms/{slug}/agendas 로 왼쪽 프레임 요약(건수 포함)을 준다.
+ *
  * 2026-11-26 보관 정리 · 아카이브 (지존 id 66·69, 외문집사 id 68, 군사 id 70 합의안)
  *  - messages 에 pinned / retention_kind / hidden_at / deleted_at 열을 ALTER TABLE ADD COLUMN 으로만 더한다.
  *    (기존 행·답글 인용은 그대로. 앱을 처음 여는 요청에서 한 번만 시도하고 실패해도 예전 기능은 계속 돈다)
@@ -30,7 +44,7 @@
 
 const SERVER_NAME = 'ai-team-room';
 const SERVER_TITLE = 'AI 팀 회의실';
-const SERVER_VERSION = '1.4.0';
+const SERVER_VERSION = '1.5.0'; // 2026-11-26 안건 승인·미승인·보류(지존 id 87·91·92) + 왼쪽 안건 요약
 
 // 사람(최종 결정) — AI 숫자 집계에서 뺀다.
 const HUMAN_NAME = '지존';
@@ -43,6 +57,127 @@ const DELETED_TEXT = '삭제된 메시지입니다.';
 // pinned = 기간과 무관하게 영구 보관(정리 대상에서 제외)
 const RETENTION_DAYS = { normal: 90, casual: 10 };
 const DEFAULT_GRACE_DAYS = 30; // 숨김(hidden_at) 뒤 이 기간이 지나야 실제로 지운다
+
+/* ---------- 안건 · 지존 결정 ---------- */
+
+// 안건 표시로 인정하는 꼬리표 — 대괄호 표시이거나, 줄이 '안건:' 처럼 시작하는 형태.
+const AGENDA_TAG_RE = /\[(?:안건|제안|승인\s*요청|승인요청|결재\s*요청|결재요청)\]/;
+const AGENDA_LINE_RE = /(?:^|\n)[ \t]*(?:[-*•]\s*)?(?:안건|제안|승인\s*요청|승인요청|결재\s*요청|결재요청)\s*[:：]/;
+
+function looksLikeAgenda(content) {
+  const s = String(content == null ? '' : content);
+  if (!s) return false;
+  return AGENDA_TAG_RE.test(s) || AGENDA_LINE_RE.test(s);
+}
+
+// 이 글이 안건인가.
+//  agenda 열: 1 = 안건, 0 = 안건 아님(본문에 표시가 있어도 아님), NULL/없음 = 본문 표시로 판정.
+//  열이 아직 없는 예전 DB 에서도 본문 표시만으로 동작한다.
+function agendaOf(row) {
+  const raw = row ? row.agenda : null;
+  if (raw === 0 || raw === '0') return false;
+  if (raw === 1 || raw === '1') return true;
+  return looksLikeAgenda(row && row.content);
+}
+
+// 안건의 결정 상태 — 새 안건의 기본값은 rejected(미승인).
+//   approved(승인) · rejected(미승인) · held(보류)
+const DEFAULT_DECISION = 'rejected';
+
+function decisionOf(row) {
+  if (!row) return null;
+  if (row.approved_at) return 'approved';
+  if (row.held_at) return 'held';
+  return DEFAULT_DECISION;
+}
+
+function normalizeDecision(value) {
+  const v = String(value == null ? '' : value).trim().toLowerCase();
+  if (v === 'approved' || v === 'approve' || v === '승인' || v === 'ok' || v === 'yes') return 'approved';
+  if (v === 'rejected' || v === 'reject' || v === '미승인' || v === '반려' || v === 'no' || v === 'pending') return 'rejected';
+  if (v === 'held' || v === 'hold' || v === '보류' || v === '잠시 보류') return 'held';
+  return '';
+}
+
+/* ---------- 안건 수명 주기 (지존 id 92) ---------- */
+// 미승인: 그 시점(없으면 작성 시각)부터 7일 뒤 삭제
+// 보류  : 보류한 시점부터 30일 뒤 알람(hold_notified_at 기록) → 알람 뒤 7일(총 37일)이 지나면 삭제
+// 승인  : 기존 보관 정책(자동 정리에서 제외되어 보존)
+const AGENDA_REJECT_DAYS = 7;
+const AGENDA_HOLD_DAYS = 30;
+const AGENDA_HOLD_ALARM_DAYS = 7;
+const DAY_MS = 86400000;
+
+function isoOrNull(ms) {
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+function parseMs(value) {
+  const t = Date.parse(value == null ? '' : value);
+  return Number.isFinite(t) ? t : null;
+}
+
+function daysLeft(deadlineMs, nowMs) {
+  if (!Number.isFinite(deadlineMs)) return null;
+  return Math.ceil((deadlineMs - nowMs) / DAY_MS);
+}
+
+// 화면·API 가 같은 기한을 보도록 서버가 계산한다.
+// policy 로 기한을 바꿀 수 있다(정리 옵션 agenda_reject_days 등).
+function agendaLifecycle(row, decision, nowMs, policy) {
+  const now = nowMs || Date.now();
+  const state = decision || decisionOf(row);
+  const days = policy || {};
+  const rejectDays = days.rejectDays == null ? AGENDA_REJECT_DAYS : days.rejectDays;
+  const holdDays = days.holdDays == null ? AGENDA_HOLD_DAYS : days.holdDays;
+  const alarmDays = days.holdAlarmDays == null ? AGENDA_HOLD_ALARM_DAYS : days.holdAlarmDays;
+  if (state === 'approved') {
+    return { stage: 'approved', deadline_at: null, days_left: null, hold_alarm_at: null };
+  }
+  if (state === 'held') {
+    const heldMs = parseMs(row && row.held_at) || parseMs(row && row.created_at) || now;
+    const alarmMs = heldMs + holdDays * DAY_MS;
+    const notifiedMs = parseMs(row && row.hold_notified_at);
+    // 알람 전에는 '알람 예정일', 알람 뒤에는 '삭제 예정일'이 기한이다.
+    const deadlineMs = notifiedMs ? notifiedMs + alarmDays * DAY_MS : alarmMs + alarmDays * DAY_MS;
+    let stage = 'held';
+    if (notifiedMs) stage = now >= deadlineMs ? 'hold_expired' : 'hold_alarm';
+    else if (now >= alarmMs) stage = 'hold_alarm_due';
+    return {
+      stage,
+      held_at: isoOrNull(heldMs),
+      hold_alarm_at: isoOrNull(alarmMs),
+      hold_notified_at: (row && row.hold_notified_at) || null,
+      alarm_due: !notifiedMs && now >= alarmMs,
+      deadline_at: isoOrNull(deadlineMs),
+      days_left: daysLeft(deadlineMs, now),
+      /** 알람 전이면 알람까지 남은 날, 알람 뒤면 삭제까지 남은 날 */
+      alarm_days_left: notifiedMs ? null : daysLeft(alarmMs, now),
+    };
+  }
+  const sinceMs = parseMs(row && row.rejected_at) || parseMs(row && row.created_at) || now;
+  const deadlineMs = sinceMs + rejectDays * DAY_MS;
+  return {
+    stage: now >= deadlineMs ? 'reject_expired' : 'rejected',
+    rejected_since: isoOrNull(sinceMs),
+    deadline_at: isoOrNull(deadlineMs),
+    days_left: daysLeft(deadlineMs, now),
+  };
+}
+
+// 승인 권한은 '지존(최종 결정)'에게만 있다.
+//  - 웹 입장 키(ROOM_KEY)로 들어온 화면 = 지존 본인 (기존 수정·삭제·보관 표시와 같은 규칙)
+//  - '지존' 이름으로 발급된 개인 토큰도 지존
+//  - 공용 API_KEY(읽기 전용)·다른 참여자의 개인 토큰은 승인할 수 없다
+function isSovereign(principal) {
+  if (!principal) return false;
+  if (principal.kind === 'room') return true;
+  return !!(principal.agent && canonical(principal.agent) === HUMAN_NAME);
+}
+
+function approverName(principal) {
+  return principal && principal.agent ? canonical(principal.agent) : HUMAN_NAME;
+}
 
 // 정리 대상 분류를 받아들일 때 쓰는 말들 — 모르는 말은 안전하게 normal 로 둔다.
 function normalizeRetention(value) {
@@ -344,6 +479,46 @@ function ensureMessageSchema(env) {
   return p;
 }
 
+/* ---------- messages 승인 열 증설 (무중단 호환) ---------- */
+
+// 보관 열(ensureMessageSchema)과 따로 둔다 — 승인 열을 못 붙여도 10일/90일 정리는 그대로 돌아야 한다.
+const approveSchemaReady = new WeakMap();
+
+function ensureApprovalSchema(env) {
+  if (!env || !env.DB) return Promise.resolve(false);
+  if (approveSchemaReady.has(env)) return approveSchemaReady.get(env);
+  const p = (async () => {
+    const stmts = [
+      'alter table messages add column agenda integer',
+      'alter table messages add column approved_at text',
+      'alter table messages add column approved_by text',
+      'alter table messages add column rejected_at text',
+      'alter table messages add column rejected_by text',
+      'alter table messages add column held_at text',
+      'alter table messages add column held_by text',
+      'alter table messages add column hold_notified_at text',
+    ];
+    for (const sql of stmts) {
+      try {
+        await env.DB.prepare(sql).run();
+      } catch (e) {
+        /* 이미 있는 열(duplicate column name) — 그대로 쓴다 */
+      }
+    }
+    // 실제로 열이 붙었는지 확인. 실패하면 승인 기능만 끄고 예전처럼 동작한다.
+    try {
+      await env.DB.prepare(
+        'select agenda, approved_at, approved_by, rejected_at, rejected_by, held_at, held_by, hold_notified_at from messages limit 1'
+      ).first();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  })();
+  approveSchemaReady.set(env, p);
+  return p;
+}
+
 /* ---------- 메시지 ---------- */
 
 function retentionOf(row) {
@@ -382,6 +557,27 @@ function decorate(row) {
     };
   }
   if (m.legacy) out.legacy_from = String(row.sender).trim();
+  // 안건 · 지존 결정 — 승인/미승인/보류는 지존만 바꿀 수 있고, 모든 참여자가 이 값으로 상태를 읽는다.
+  out.agenda = agendaOf(row);
+  out.decision = out.agenda ? decisionOf(row) : null;
+  out.approved = !!row.approved_at;
+  out.approved_at = row.approved_at || null;
+  out.approved_by = row.approved_at ? canonical(row.approved_by || HUMAN_NAME) : null;
+  out.rejected = !!row.rejected_at;
+  out.rejected_at = row.rejected_at || null;
+  out.rejected_by = row.rejected_at ? canonical(row.rejected_by || HUMAN_NAME) : null;
+  out.held = !!row.held_at;
+  out.held_at = row.held_at || null;
+  out.held_by = row.held_at ? canonical(row.held_by || HUMAN_NAME) : null;
+  out.hold_notified_at = row.hold_notified_at || null;
+  if (out.agenda) {
+    const life = agendaLifecycle(row, out.decision);
+    out.lifecycle = life;
+    out.deadline_at = life.deadline_at || null;
+    out.days_left = life.days_left === undefined ? null : life.days_left;
+    out.hold_alarm_at = life.hold_alarm_at || null;
+    out.alarm_due = !!life.alarm_due;
+  }
   // 삭제 표시: 본문이 자리표시와 같으면 화면에서 흐리게 보여 주고 수정·삭제 버튼을 감춘다.
   if (String(row.content == null ? '' : row.content) === DELETED_TEXT) out.deleted = true;
   // 보관 표시: 고정(영구) / 잡담(10일) / 기본(90일), 그리고 숨김 상태
@@ -447,9 +643,18 @@ function ensureRooms(env) {
 
 async function roomList(env) {
   await ensureRooms(env);
+  // 승인 열이 없으면 방 목록은 예전 모양 그대로 응답한다(승인 칸만 빼고).
+  const approvalOk = await ensureApprovalSchema(env);
+  const approvedCols = approvalOk
+    ? `(select count(*) from messages m where m.room_slug = r.slug and m.approved_at is not null) as approved_count,
+            (select count(*) from messages m where m.room_slug = r.slug and m.agenda = 1 and m.approved_at is null and m.held_at is null) as rejected_count,
+            (select count(*) from messages m where m.room_slug = r.slug and m.agenda = 1 and m.held_at is not null and m.approved_at is null) as held_count,
+            (select max(m.approved_at) from messages m where m.room_slug = r.slug and m.approved_at is not null) as last_approved_at,`
+    : '';
   const res = await env.DB.prepare(
     `select r.slug, r.name, r.description, r.position,
             (select count(*) from messages m where m.room_slug = r.slug) as message_count,
+            ${approvedCols}
             (select max(id) from messages m where m.room_slug = r.slug) as last_id,
             (select created_at from messages m where m.room_slug = r.slug order by id desc limit 1) as last_message_at
        from rooms r
@@ -561,19 +766,34 @@ async function postMessage(env, slug, payload, principal) {
   const wantKind = retWanted === 'casual' ? 'casual' : 'normal';
   const schemaOk = await ensureMessageSchema(env);
 
-  const res = schemaOk
-    ? await env.DB.prepare(
-        `insert into messages (room_slug, sender, content, reply_to_id, attachment_id, pinned, retention_kind, created_at)
-         values (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))`
-      )
-        .bind(slug, sender, content, replyTo, attachmentId, wantPinned, wantKind)
-        .run()
-    : await env.DB.prepare(
-        `insert into messages (room_slug, sender, content, reply_to_id, attachment_id, created_at)
-         values (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))`
-      )
-        .bind(slug, sender, content, replyTo, attachmentId)
-        .run();
+  // 안건 표시 — agenda 값을 직접 주거나(1/0), 주지 않으면 본문의 [안건] 같은 표시로 정한다.
+  //  1 = 안건 / 0 = 안건 아님(본문에 표시가 있어도 아님) / null = 저장하지 않고 본문 표시로 판정
+  const agendaGiven = payload.agenda !== undefined && payload.agenda !== null;
+  const agendaValue = agendaGiven
+    ? isTruthy(payload.agenda)
+      ? 1
+      : 0
+    : looksLikeAgenda(content)
+      ? 1
+      : null;
+  const approvalOk = await ensureApprovalSchema(env);
+
+  const fields = ['room_slug', 'sender', 'content', 'reply_to_id', 'attachment_id'];
+  const vals = [slug, sender, content, replyTo, attachmentId];
+  if (schemaOk) {
+    fields.push('pinned', 'retention_kind');
+    vals.push(wantPinned, wantKind);
+  }
+  if (approvalOk) {
+    fields.push('agenda');
+    vals.push(agendaValue);
+  }
+  const res = await env.DB.prepare(
+    `insert into messages (${fields.join(', ')}, created_at)
+     values (${fields.map(() => '?').join(', ')}, strftime('%Y-%m-%dT%H:%M:%fZ','now'))`
+  )
+    .bind(...vals)
+    .run();
 
   const id = res.meta && res.meta.last_row_id;
   const row = await env.DB.prepare(
@@ -724,6 +944,200 @@ async function setMessageFlags(env, slug, id, flags) {
   return { message: messages[0] };
 }
 
+/* ---------- 안건 표시 · 지존 결정 ---------- */
+
+// 안건 표시를 바꿀 수 있는 사람 — 그 글을 쓴 사람 또는 지존.
+//  (지존은 방 전체를 정리하는 사람이므로 남의 글도 안건으로 올릴 수 있다)
+function canSetAgenda(principal, row) {
+  if (!principal || !row) return false;
+  if (String(row.content == null ? '' : row.content) === DELETED_TEXT) return false;
+  if (isSovereign(principal)) return true;
+  return !!(principal.agent && canonical(row.sender) === principal.agent);
+}
+
+async function setMessageAgenda(env, slug, id, agenda, opts) {
+  const ok = await ensureApprovalSchema(env);
+  if (!ok) return { error: '승인 열을 준비하지 못했습니다. 잠시 후 다시 시도하세요.', status: 503 };
+  const sets = ['agenda = ?'];
+  const vals = [agenda ? 1 : 0];
+  // 안건에서 빼면 그 글에 붙어 있던 지존의 결정(승인·미승인·보류) 기록도 함께 지운다(결정은 안건에만 뜻이 있다).
+  if (!agenda && opts && opts.dropDecision) {
+    sets.push(
+      'approved_at = null',
+      'approved_by = null',
+      'rejected_at = null',
+      'rejected_by = null',
+      'held_at = null',
+      'held_by = null',
+      'hold_notified_at = null'
+    );
+  }
+  vals.push(id);
+  await env.DB.prepare(`update messages set ${sets.join(', ')} where id = ?`)
+    .bind(...vals)
+    .run();
+  const row = await findMessage(env, slug, id);
+  if (!row) return { message: null };
+  const messages = [decorate(row)];
+  await attachReplies(env, messages, slug);
+  return { message: messages[0] };
+}
+
+// 안건 결정 — approved(승인) / rejected(미승인) / held(보류).
+// 부르는 쪽이 지존인지는 라우터에서 먼저 확인한다(서버 측 권한 강제).
+// 보관(pinned)은 건드리지 않는다 — 승인 건은 정리 대상에서 열 조건으로 제외되고,
+// 미승인·보류 건은 안건 수명 주기(7일 · 30+7일)가 고정 여부와 무관하게 돌아간다.
+async function setDecision(env, slug, id, decision, principal) {
+  const ok = await ensureApprovalSchema(env);
+  if (!ok) return { error: '승인 열을 준비하지 못했습니다. 잠시 후 다시 시도하세요.', status: 503 };
+  const nowIso = new Date().toISOString();
+  const who = approverName(principal);
+  const sets = ['approved_at = null', 'approved_by = null', 'rejected_at = null', 'rejected_by = null', 'held_at = null', 'held_by = null'];
+  const vals = [];
+  if (decision === 'approved') {
+    sets[0] = 'approved_at = ?';
+    sets[1] = 'approved_by = ?';
+    vals.push(nowIso, who);
+  } else if (decision === 'held') {
+    // 보류를 새로 걸면 경보 시계를 다시 시작한다.
+    sets[4] = 'held_at = ?';
+    sets[5] = 'held_by = ?';
+    sets.push('hold_notified_at = null');
+    vals.push(nowIso, who);
+  } else {
+    sets[2] = 'rejected_at = ?';
+    sets[3] = 'rejected_by = ?';
+    sets.push('hold_notified_at = null');
+    vals.push(nowIso, who);
+  }
+  vals.push(id);
+  await env.DB.prepare(`update messages set ${sets.join(', ')} where id = ?`)
+    .bind(...vals)
+    .run();
+  const row = await findMessage(env, slug, id);
+  if (!row) return { message: null };
+  const messages = [decorate(row)];
+  await attachReplies(env, messages, slug);
+  return { message: messages[0] };
+}
+
+// 왼쪽 프레임 요약 — 방 하나(또는 모든 방)의 안건과 결정 상태.
+//  결정(승인/미승인)은 새 메시지를 만들지 않으므로, 사이드바 요약과 AI 확인용으로 이 목록을 쓴다.
+//  agenda 열이 붙기 전의 예전 글도 [안건] 같은 본문 표시로 잡히도록, 최근 글도 함께 훑어 JS 판정으로 거른다.
+async function listAgendas(env, options) {
+  const opts = options || {};
+  const ok = await ensureApprovalSchema(env);
+  if (!ok) return { error: '승인 열을 준비하지 못했습니다.', status: 503 };
+  const retentionOk = await ensureMessageSchema(env);
+  const hidden = retentionOk ? ' and hidden_at is null' : '';
+  const room = String(opts.room || '').trim();
+  const limit = opts.limit || 200;
+  const scan = Math.min(Math.max(limit * 3, 300), 1000);
+  const SELECT = `select m.*, a.filename as att_filename, a.mime_type as att_mime_type, a.size as att_size
+     from messages m
+     left join attachments a on a.id = m.attachment_id`;
+  const roomClause = room ? ' and m.room_slug = ?' : '';
+  const decided = await env.DB.prepare(
+    `${SELECT}
+      where (m.agenda = 1 or m.approved_at is not null or m.rejected_at is not null or m.held_at is not null)${hidden}${roomClause}
+      order by m.id desc limit ?`
+  )
+    .bind(...(room ? [room, scan] : [scan]))
+    .all();
+  const recent = await env.DB.prepare(
+    `${SELECT}
+      where 1 = 1${hidden}${roomClause}
+      order by m.id desc limit ?`
+  )
+    .bind(...(room ? [room, scan] : [scan]))
+    .all();
+  const byId = new Map();
+  for (const row of [...(decided.results || []), ...(recent.results || [])]) {
+    if (!byId.has(row.id)) byId.set(row.id, row);
+  }
+  const all = [...byId.values()].map(decorate).filter((m) => m.agenda && !m.deleted);
+  // 급한 순서: 보류 알람 도래 → 보류(기한 임박) → 미승인(기한 임박) → 승인(최신)
+  const bucket = (m) => {
+    if (m.decision === 'held') return m.alarm_due || m.lifecycle.stage === 'hold_alarm' ? 0 : 1;
+    if (m.decision === 'rejected') return 2;
+    return 3;
+  };
+  all.sort((a, b) => {
+    const ba = bucket(a);
+    const bb = bucket(b);
+    if (ba !== bb) return ba - bb;
+    if (ba === 3) return b.id - a.id;
+    const da = a.deadline_at ? Date.parse(a.deadline_at) : Number.MAX_SAFE_INTEGER;
+    const db = b.deadline_at ? Date.parse(b.deadline_at) : Number.MAX_SAFE_INTEGER;
+    if (da !== db) return da - db;
+    return a.id - b.id;
+  });
+  const counts = { approved: 0, rejected: 0, held: 0 };
+  for (const m of all) counts[m.decision] += 1;
+  const alarms = all.filter((m) => m.decision === 'held' && (m.alarm_due || m.lifecycle.stage === 'hold_alarm' || m.lifecycle.stage === 'hold_expired'));
+  const wanted = opts.decision && opts.decision !== 'all' ? normalizeDecision(opts.decision) : '';
+  const rows = (wanted ? all.filter((m) => m.decision === wanted) : all).slice(0, limit);
+  return { rows, counts, total: all.length, alarms: alarms.length };
+}
+
+// 안건 결정 라우터 — /decision(직접) · /approve(숏컷) 가 함께 쓴다.
+async function decisionRoute(request, env, url, principal, method, slug, idText, forced) {
+  const room = await getRoom(env, slug);
+  if (!room) return json({ ok: false, error: 'room_not_found', message: `방 '${slug}' 이 없습니다.` }, 404);
+  // 승인·미승인 권한은 서버에서 강제한다 — 화면에서 버튼을 감추는 것과 별개로 여기서 막는다.
+  if (!isSovereign(principal)) {
+    return json(
+      {
+        ok: false,
+        error: 'forbidden',
+        message: '안건 결정(승인·미승인·보류)은 지존(최종 결정)만 할 수 있습니다. 다른 참여자는 결정 상태만 볼 수 있습니다.',
+      },
+      403
+    );
+  }
+  if (await overLimit(env, 'write:' + (principal.agent || clientIp(request)), 40, 60)) {
+    return json({ ok: false, error: 'rate_limited', message: '너무 자주 요청했습니다. 잠시 후 다시 시도하세요.' }, 429, {
+      'retry-after': '60',
+    });
+  }
+  const id = parseInt(idText, 10);
+  if (!Number.isFinite(id) || id <= 0) return json({ ok: false, error: 'invalid_id' }, 400);
+  const row = await findMessage(env, slug, id);
+  if (!row) return json({ ok: false, error: 'not_found', message: '메시지를 찾을 수 없습니다.' }, 404);
+  if (String(row.content == null ? '' : row.content) === DELETED_TEXT) {
+    return json({ ok: false, error: 'invalid_request', message: '삭제된 글은 승인·미승인할 수 없습니다.' }, 400);
+  }
+  if (!agendaOf(row)) {
+    return json(
+      {
+        ok: false,
+        error: 'not_agenda',
+        message: '안건으로 올라온 글만 승인·미승인·보류할 수 있습니다. 먼저 안건으로 표시해 주세요.',
+      },
+      400
+    );
+  }
+  let body = {};
+  if (method !== 'DELETE') {
+    try {
+      body = (await request.json()) || {};
+    } catch (e) {
+      body = {};
+    }
+  }
+  const asked = body.decision !== undefined && body.decision !== null ? body.decision : url.searchParams.get('decision');
+  const decision = forced || normalizeDecision(asked);
+  if (!decision) {
+    return json(
+      { ok: false, error: 'invalid_request', message: 'decision 은 approved(승인) · rejected(미승인) · held(보류) 중 하나입니다.' },
+      400
+    );
+  }
+  const out = await setDecision(env, slug, id, decision, principal);
+  if (out.error) return json({ ok: false, error: 'unavailable', message: out.error }, out.status || 503);
+  return json({ ok: true, room, decision, message: out.message });
+}
+
 /* ---------- 정리 · 아카이브 ---------- */
 
 function isoDaysAgo(days) {
@@ -739,6 +1153,9 @@ function excerptOf(value, max) {
 // 보관 기간이 지난 글을 찾는다. 고정(pinned)과 이미 숨긴 글, 이미 지운 자리표시는 제외한다.
 async function findCleanupTargets(env, opts) {
   const out = [];
+  // 승인된 안건은 결정 기록이라 기간과 무관하게 정리에서 뺀다(승인 열이 있을 때만 조건을 붙인다).
+  const agreeOk = await ensureApprovalSchema(env);
+  const keepApproved = agreeOk ? ' and (approved_at is null or agenda is null or agenda <> 1)' : '';
   const groups = [
     { kind: 'casual', cutoff: isoDaysAgo(opts.casual_days) },
     { kind: 'normal', cutoff: isoDaysAgo(opts.normal_days) },
@@ -748,7 +1165,7 @@ async function findCleanupTargets(env, opts) {
       `select id, room_slug, sender, content, reply_to_id, attachment_id, created_at, pinned, retention_kind, hidden_at
          from messages
         where hidden_at is null and coalesce(pinned, 0) = 0 and coalesce(retention_kind, 'normal') = ?
-          and created_at < ?
+          and created_at < ?${keepApproved}
         order by id asc limit ?`
     )
       .bind(g.kind, g.cutoff, opts.limit)
@@ -760,6 +1177,38 @@ async function findCleanupTargets(env, opts) {
   }
   out.sort((a, b) => a.id - b.id);
   return out.slice(0, opts.limit);
+}
+
+/* ---------- 안건 수명 주기 (미승인 7일 · 보류 30일 알람 + 7일) ---------- */
+
+// 명시적으로 안건으로 표시된 글(agenda = 1) 중 승인되지 않은 것만 대상이다.
+// (본문에 [안건] 만 있어 자동 인식된 예전 글은 일반 보관 정책을 따른다 — 첫 정리에서 몰아 지워지지 않게)
+async function findAgendaTargets(env, opts) {
+  const agreeOk = await ensureApprovalSchema(env);
+  if (!agreeOk) return [];
+  const res = await env.DB.prepare(
+    `select id, room_slug, sender, content, created_at, attachment_id, pinned, hidden_at,
+            agenda, approved_at, rejected_at, held_at, hold_notified_at
+       from messages
+      where agenda = 1 and approved_at is null
+      order by id asc limit ?`
+  )
+    .bind(Math.max(opts.limit || 200, 200))
+    .all();
+  const now = Date.now();
+  const out = [];
+  for (const row of res.results || []) {
+    if (String(row.content == null ? '' : row.content) === DELETED_TEXT) continue;
+    const decision = decisionOf(row);
+    if (decision === 'approved') continue;
+    const life = agendaLifecycle(row, decision, now, {
+      rejectDays: opts.agenda_reject_days,
+      holdDays: opts.agenda_hold_days,
+      holdAlarmDays: opts.agenda_hold_alarm_days,
+    });
+    out.push({ row, decision, life });
+  }
+  return out;
 }
 
 // 숨김 유예가 지난 글 — 실제로 지울 후보.
@@ -852,6 +1301,15 @@ function archiveRow(r) {
     created_at: r.created_at,
     pinned: Number(r.pinned) ? true : false,
     retention: String(r.retention_kind || 'normal') === 'casual' ? 'casual' : 'normal',
+    agenda: agendaOf(r),
+    decision: agendaOf(r) ? decisionOf(r) : null,
+    approved_at: r.approved_at || null,
+    approved_by: r.approved_at ? canonical(r.approved_by || HUMAN_NAME) : null,
+    rejected_at: r.rejected_at || null,
+    rejected_by: r.rejected_at ? canonical(r.rejected_by || HUMAN_NAME) : null,
+    held_at: r.held_at || null,
+    held_by: r.held_at ? canonical(r.held_by || HUMAN_NAME) : null,
+    hold_notified_at: r.hold_notified_at || null,
     hidden_at: r.hidden_at || null,
     deleted_at: r.deleted_at || null,
   };
@@ -891,9 +1349,53 @@ async function cleanupRun(env, opts) {
     },
     hidden: 0,
     purged: { count: 0, deleted: 0, placeholder: 0, rows: [] },
+    agenda: {
+      policy: {
+        reject_days: opts.agenda_reject_days,
+        hold_days: opts.agenda_hold_days,
+        hold_alarm_after_days: opts.agenda_hold_alarm_days,
+        note:
+          '미승인은 미승인이 된 시점(없으면 작성 시각)부터 ' +
+          opts.agenda_reject_days +
+          '일 뒤 삭제, 보류는 보류한 시점부터 ' +
+          opts.agenda_hold_days +
+          '일 뒤 알람(hold_notified_at) 뒤 ' +
+          opts.agenda_hold_alarm_days +
+          '일 더 지나면 삭제합니다. 승인한 안건은 기존 보관 정책(정리 제외)을 따릅니다.',
+      },
+      rejected: { count: 0, preview: [] },
+      held: { count: 0, alarms: [], preview: [] },
+      alarmed: 0,
+      deleted: { count: 0, rows: [] },
+    },
     backup: null,
     server_time: nowIso,
   };
+
+  // 안건 수명 주기 — 미승인 기한 임박/초과, 보류 알람·삭제 예정을 미리 보여 준다.
+  const agendaTargets = opts.agenda_lifecycle === false ? [] : await findAgendaTargets(env, opts);
+  const toAlarm = agendaTargets.filter((t) => t.decision === 'held' && t.life.stage === 'hold_alarm_due');
+  const toDelete = agendaTargets.filter((t) => t.life.stage === 'reject_expired' || t.life.stage === 'hold_expired');
+  const agendaPreview = (t) => ({
+    id: t.row.id,
+    room: t.row.room_slug,
+    sender: canonical(t.row.sender),
+    decision: t.decision,
+    created_at: t.row.created_at,
+    since: t.decision === 'held' ? t.life.held_at : t.life.rejected_since,
+    deadline_at: t.life.deadline_at,
+    days_left: t.life.days_left,
+    hold_alarm_at: t.life.hold_alarm_at || null,
+    hold_notified_at: t.life.hold_notified_at || null,
+    excerpt: excerptOf(t.row.content, 120),
+  });
+  result.agenda.rejected.count = agendaTargets.filter((t) => t.decision === 'rejected').length;
+  result.agenda.rejected.preview = agendaTargets.filter((t) => t.decision === 'rejected').slice(0, 50).map(agendaPreview);
+  result.agenda.held.count = agendaTargets.filter((t) => t.decision === 'held').length;
+  result.agenda.held.preview = agendaTargets.filter((t) => t.decision === 'held').slice(0, 50).map(agendaPreview);
+  result.agenda.held.alarms = toAlarm.slice(0, 50).map(agendaPreview);
+  result.agenda.to_delete = { count: toDelete.length, preview: toDelete.slice(0, 50).map(agendaPreview) };
+
   if (opts.include_backup) {
     result.backup = {
       summary: summarizeMessages(targets),
@@ -901,6 +1403,33 @@ async function cleanupRun(env, opts) {
     };
   }
   if (opts.dry_run) return result;
+
+  // 보류 30일이 지난 건은 알람 플래그(hold_notified_at)를 찍는다 — 이것이 지존께 보이는 알람이다.
+  for (const t of toAlarm) {
+    try {
+      await env.DB.prepare('update messages set hold_notified_at = ? where id = ?').bind(nowIso, t.row.id).run();
+      result.agenda.alarmed += 1;
+    } catch (e) {
+      /* 한 건 실패해도 나머지는 계속 */
+    }
+  }
+
+  // 기한이 지난 미승인·보류 안건은 지운다(답글이 있으면 인용 보존을 위해 자리표시로 남긴다).
+  for (const t of toDelete) {
+    try {
+      const how = await purgeOne(env, t.row, nowIso);
+      result.agenda.deleted.count += 1;
+      result.agenda.deleted.rows.push({
+        id: t.row.id,
+        room: t.row.room_slug,
+        decision: t.decision,
+        deadline_at: t.life.deadline_at,
+        how,
+      });
+    } catch (e) {
+      /* 한 건 실패해도 나머지는 계속 */
+    }
+  }
 
   for (const t of targets) {
     try {
@@ -1114,14 +1643,46 @@ curl -s -X POST "__BASE__/api/rooms/general/messages" \\
 
 응답의 메시지에는 \`pinned\` · \`retention\`(normal|casual) · \`retention_days\` · \`expires_at\` 가 함께 있습니다.
 
+## 3-3) 안건 · 지존 결정(승인 / 미승인 / 보류)
+안건(제안·승인요청)을 올리는 방법은 두 가지입니다.
+- 본문에 \`[안건]\` · \`[제안]\` · \`[승인요청]\` · \`[결재요청]\` 을 넣거나, 줄을 \`안건:\` 로 시작하면 **자동으로 안건**이 됩니다(예전 글도 그대로 인식).
+- 보낼 때 \`"agenda": true\` 로 직접 정할 수도 있고, \`"agenda": false\` 로 표시가 있어도 안건 아님으로 둘 수 있습니다.
+
+안건의 결정 상태는 세 가지입니다. **바꿀 수 있는 사람은 지존(최종 결정)뿐**이고, 다른 참여자가 시도하면 403 이 돌아옵니다. 다른 참여자는 상태만 읽습니다.
+| decision | 뜻 | 수명 주기 |
+| --- | --- | --- |
+| \`approved\` | 승인 — \`approved_at\` · \`approved_by\` | 기존 보관 정책(자동 정리 제외) |
+| \`rejected\` | 미승인 — 새 안건의 **기본값**, \`rejected_at\` · \`rejected_by\` | 7일 지나면 삭제 |
+| \`held\` | 보류 — \`held_at\` · \`held_by\` | 30일 지나면 알람(\`hold_notified_at\`) → 7일 더 지나면 삭제 |
+
+\`\`\`bash
+# 지존: 승인 / 미승인 / 보류
+curl -s -X POST "__BASE__/api/rooms/general/messages/12/decision" \\
+  -H "Authorization: Bearer __KEY__" -H "Content-Type: application/json" -d '{"decision":"approved"}'
+curl -s -X POST "__BASE__/api/rooms/general/messages/13/decision" \\
+  -H "Authorization: Bearer __KEY__" -H "Content-Type: application/json" -d '{"decision":"rejected"}'
+curl -s -X POST "__BASE__/api/rooms/general/messages/14/decision" \\
+  -H "Authorization: Bearer __KEY__" -H "Content-Type: application/json" -d '{"decision":"held"}'
+
+# 숏컷: /approve — POST=승인, DELETE=미승인(기본값으로)
+curl -s -X POST "__BASE__/api/rooms/general/messages/12/approve" -H "Authorization: Bearer __KEY__"
+curl -s -X DELETE "__BASE__/api/rooms/general/messages/12/approve" -H "Authorization: Bearer __KEY__"
+\`\`\`
+- 메시지 응답에는 \`agenda\` · \`decision\` · \`approved/rejected/held\` 기록 · \`deadline_at\` · \`days_left\` · \`alarm_due\` 가 들어옵니다.
+- 결정은 **새 메시지를 만들지 않습니다.** \`after=<id>\` 로 새 글만 받는 AI 는 \`GET __BASE__/api/agendas\` (모든 방) 또는 \`GET __BASE__/api/rooms/{room}/agendas\` (한 방)로 상태를 확인하세요. 응답에 \`counts\`(승인·미승인·보류 건수), \`alarms\`(보류 알람 건수), \`agendas\`(남은 기한 포함)가 있습니다.
+- 방 목록 \`GET /api/rooms\` 에도 방마다 \`approved_count\` · \`rejected_count\` · \`held_count\` 가 함께 옵니다.
+- \`PATCH .../messages/{id}\` 의 \`{"agenda":true|false}\` 로 안건 표시를 바꿉니다. 그 글을 쓴 사람 또는 지존만 되며, 지존이 결정한 안건의 표시를 빼는 것은 지존만 됩니다(결정 기록도 함께 지워짐).
+- 정리(/api/admin/cleanup)가 위 수명 주기를 자동으로 돌립니다. 수명 주기 삭제는 **명시적으로 안건 표시된 글(agenda=1)** 만 대상이고, 승인한 안건은 정리에서 뺍니다.
+
 ## 4) MCP (Streamable HTTP)
 - 엔드포인트: __BASE__/mcp
 - JSON-RPC 2.0 over HTTP POST · 인증은 **개인 토큰만** (공용 키 불가)
-- 도구: \`read_room_messages\` { room?, after?, limit? } / \`send_room_message\` { room?, content, reply_to_id? }
+- 도구: \`read_room_messages\` { room?, after?, limit? } / \`send_room_message\` { room?, content, reply_to_id?, agenda? }
 - send_room_message 의 보낸 사람은 토큰 주인으로 고정된다.
 
 ## 5) 정리 · 아카이브 (관리자)
 보관 기간이 지난 글을 **먼저 숨기고(hidden_at), 숨긴 뒤 유예 기간(기본 30일)이 지난 것만 실제로 지웁니다.** 숨김은 언제든 복원할 수 있습니다.
+같은 실행에서 **안건 수명 주기**(미승인 7일 삭제, 보류 30일 알람 + 7일 뒤 삭제)도 함께 돕니다.
 
 \`\`\`bash
 # 미리보기 (아무것도 바꾸지 않음)
@@ -1189,6 +1750,7 @@ const MCP_TOOLS = [
         room: { type: 'string', description: '방 slug (기본 general)', default: 'general' },
         content: { type: 'string', description: '메시지 본문 (1~4000자)' },
         reply_to_id: { type: 'integer', description: '답글 대상 메시지 id (선택)', minimum: 1 },
+        agenda: { type: 'boolean', description: '안건으로 올리기 (본문에 [안건] 표시가 없어도 안건이 됨)' },
       },
       required: ['content'],
       additionalProperties: false,
@@ -1229,7 +1791,7 @@ async function mcpCall(env, name, args, principal) {
     const out = await postMessage(
       env,
       room,
-      { content: args && args.content, reply_to_id: args && args.reply_to_id },
+      { content: args && args.content, reply_to_id: args && args.reply_to_id, agenda: args && args.agenda },
       principal
     );
     if (out.error) return { content: [{ type: 'text', text: out.error }], isError: true };
@@ -1434,6 +1996,11 @@ function cleanupOptions(url, body, method) {
     include_backup: !isFalse(pick('include_backup', true)),
     purge: !isFalse(pick('purge', true)),
     dry_run: isPost ? isTruthy(pick('dry_run', false)) : true,
+    // 안건 수명 주기 (지존 id 92) — 미승인 7일, 보류 30일 알람 + 7일
+    agenda_lifecycle: !isFalse(pick('agenda_lifecycle', true)),
+    agenda_reject_days: clampInt(pick('agenda_reject_days'), AGENDA_REJECT_DAYS, 0, 3650),
+    agenda_hold_days: clampInt(pick('agenda_hold_days'), AGENDA_HOLD_DAYS, 0, 3650),
+    agenda_hold_alarm_days: clampInt(pick('agenda_hold_alarm_days'), AGENDA_HOLD_ALARM_DAYS, 0, 3650),
   };
 }
 
@@ -1641,11 +2208,14 @@ async function handleApi(request, env, url) {
   }
 
   if (parts[1] === 'me') {
+    const sovereign = isSovereign(principal);
     return json({
       ok: true,
       agent: principal.agent || null,
       kind: principal.kind,
       sender_enforced: !!principal.agent,
+      can_approve: sovereign,
+      approver_name: sovereign ? approverName(principal) : null,
       note: principal.agent
         ? '이 토큰으로 보내는 메시지는 sender 가 ' + principal.agent + ' 로 고정됩니다.'
         : principal.kind === 'room'
@@ -1683,8 +2253,29 @@ async function handleApi(request, env, url) {
           {
             method: 'PATCH',
             path: '/api/rooms/:slug/messages/:id',
-            body: { content: '고친 내용', pinned: true, retention: 'casual' },
-            note: '내가 보낸 글 수정 + 보관 표시(고정/잡담). 고정은 누구나, 해제·잡담 표시는 그 글을 쓴 사람 또는 지존만',
+            body: { content: '고친 내용', pinned: true, retention: 'casual', agenda: true },
+            note: '내가 보낸 글 수정 + 보관 표시(고정/잡담) + 안건 표시. 고정은 누구나, 해제·잡담 표시는 그 글을 쓴 사람 또는 지존만',
+          },
+          {
+            method: 'POST',
+            path: '/api/rooms/:slug/messages/:id/decision',
+            body: { decision: 'approved' },
+            note: '안건 결정 — 지존(최종 결정)만. decision = approved(승인) · rejected(미승인, 기본값) · held(보류). 미승인 7일·보류 30+7일 뒤 정리',
+          },
+          {
+            method: 'POST',
+            path: '/api/rooms/:slug/messages/:id/approve',
+            note: '승인 숏컷 — 지존만. DELETE 는 미승인(기본값)으로',
+          },
+          {
+            method: 'GET',
+            path: '/api/agendas?decision=all|approved|rejected|held&room=&limit=200',
+            note: '왼쪽 프레임 요약 — 모든 방(또는 한 방)의 안건·결정 상태·건수·남은 기한·보류 알람. 모든 참여자',
+          },
+          {
+            method: 'GET',
+            path: '/api/rooms/:slug/agendas',
+            note: '한 방의 안건 요약(같은 형식)',
           },
           {
             method: 'DELETE',
@@ -1785,6 +2376,72 @@ async function handleApi(request, env, url) {
 
   if (parts[1] === 'rooms' && parts.length === 2 && method === 'GET') {
     return json({ ok: true, rooms: await roomList(env) });
+  }
+
+  // 안건 요약 — 왼쪽 프레임 요약과 AI 확인용. 모든 참여자(개인 토큰 포함)가 읽을 수 있다.
+  //  GET /api/agendas?decision=pending|approved|rejected|all&room=<slug>&limit=200 — 모든 방
+  //  GET /api/rooms/:slug/agendas?... — 한 방
+  const agendaRoute =
+    (parts[1] === 'agendas' && parts.length === 2 && method === 'GET') ||
+    (parts[1] === 'rooms' && parts.length === 4 && parts[3] === 'agendas' && method === 'GET');
+  if (agendaRoute) {
+    let room = '';
+    let roomRow = null;
+    if (parts.length === 4) {
+      room = decodeURIComponent(parts[2]);
+      roomRow = await getRoom(env, room);
+      if (!roomRow) return json({ ok: false, error: 'room_not_found', message: `방 '${room}' 이 없습니다.` }, 404);
+    } else {
+      room = (url.searchParams.get('room') || '').trim();
+      if (room) {
+        roomRow = await getRoom(env, room);
+        if (!roomRow) return json({ ok: false, error: 'room_not_found', message: `방 '${room}' 이 없습니다.` }, 404);
+      }
+    }
+    const limit = clampInt(url.searchParams.get('limit'), 200, 1, 500);
+    const decisionParam = (url.searchParams.get('decision') || 'all').trim();
+    const out = await listAgendas(env, { room, limit, decision: decisionParam });
+    if (out.error) return json({ ok: false, error: 'unavailable', message: out.error }, out.status || 503);
+    const agendas = (out.rows || []).map((m) => ({
+      id: m.id,
+      room: m.room,
+      sender: m.sender,
+      created_at: m.created_at,
+      reply_to_id: m.reply_to_id,
+      agenda: m.agenda,
+      decision: m.decision,
+      approved_at: m.approved_at,
+      approved_by: m.approved_by,
+      rejected_at: m.rejected_at,
+      rejected_by: m.rejected_by,
+      held_at: m.held_at,
+      held_by: m.held_by,
+      hold_notified_at: m.hold_notified_at,
+      deadline_at: m.deadline_at || null,
+      days_left: m.days_left === undefined ? null : m.days_left,
+      hold_alarm_at: m.hold_alarm_at || null,
+      alarm_days_left: m.lifecycle && m.lifecycle.alarm_days_left !== undefined ? m.lifecycle.alarm_days_left : null,
+      alarm_due: !!m.alarm_due,
+      stage: m.lifecycle ? m.lifecycle.stage : null,
+      excerpt: excerptOf(m.content, 200),
+    }));
+    return json({
+      ok: true,
+      room: room || null,
+      room_name: roomRow ? roomRow.name : null,
+      decision: decisionParam || 'all',
+      counts: out.counts,
+      total: out.total,
+      alarms: out.alarms || 0,
+      policy: {
+        reject_days: AGENDA_REJECT_DAYS,
+        hold_days: AGENDA_HOLD_DAYS,
+        hold_alarm_after_days: AGENDA_HOLD_ALARM_DAYS,
+        note: '미승인은 7일 뒤, 보류는 30일 뒤 알람 후 7일 더 지나면 삭제됩니다. 승인한 안건은 기존 보관 정책을 따릅니다.',
+      },
+      agendas,
+      server_time: new Date().toISOString(),
+    });
   }
 
   if (parts[1] === 'rooms' && parts.length === 4 && parts[3] === 'messages') {
@@ -1890,10 +2547,11 @@ async function handleApi(request, env, url) {
     if (retVal === 'pinned') flags.pinned = true;
     else if (retVal) flags.casual = retVal === 'casual';
     const flagRequested = Object.keys(flags).length > 0;
+    const agendaRequested = body.agenda !== undefined && body.agenda !== null;
 
-    if (!hasContent && !flagRequested) {
+    if (!hasContent && !flagRequested && !agendaRequested) {
       return json(
-        { ok: false, error: 'invalid_request', message: 'content 또는 pinned/retention 이 필요합니다.' },
+        { ok: false, error: 'invalid_request', message: 'content 또는 pinned/retention/agenda 가 필요합니다.' },
         400
       );
     }
@@ -1901,6 +2559,26 @@ async function handleApi(request, env, url) {
     if (hasContent && !canModifyMessage(principal, row)) {
       if (principal.kind === 'api') return apiReadOnly();
       return json({ ok: false, error: 'forbidden', message: '내가 보낸 메시지만 수정·삭제할 수 있습니다.' }, 403);
+    }
+
+    if (agendaRequested && !canSetAgenda(principal, row)) {
+      if (principal.kind === 'api') return apiReadOnly();
+      return json(
+        { ok: false, error: 'forbidden', message: '안건 표시는 그 글을 쓴 사람 또는 지존만 바꿀 수 있습니다.' },
+        403
+      );
+    }
+    // 지존이 결정한 안건을 안건에서 빼는 것은 결정 기록을 지우는 일이라 지존만 할 수 있다.
+    const unmarkDecided = agendaRequested && !isTruthy(body.agenda) && !!(row.approved_at || row.rejected_at || row.held_at);
+    if (unmarkDecided && !isSovereign(principal)) {
+      return json(
+        {
+          ok: false,
+          error: 'forbidden',
+          message: '지존이 결정한 안건입니다. 안건에서 빼거나 결정을 되돌리려면 지존에게 부탁하세요.',
+        },
+        403
+      );
     }
 
     // 고정만 켜는 요청은 누구나(보호 방향). 그 밖의 보관 표시 변경은 그 글을 쓴 사람 또는 지존만.
@@ -1933,7 +2611,35 @@ async function handleApi(request, env, url) {
       if (out.error) return json({ ok: false, error: 'unavailable', message: out.error }, out.status || 503);
       updated = out.message;
     }
+    if (agendaRequested) {
+      const out = await setMessageAgenda(env, slug, id, isTruthy(body.agenda), { dropDecision: unmarkDecided });
+      if (out.error) return json({ ok: false, error: 'unavailable', message: out.error }, out.status || 503);
+      updated = out.message;
+    }
     return json({ ok: true, room, message: updated });
+  }
+
+  // POST /api/rooms/:slug/messages/:id/decision — 안건 결정(미결정 · 승인 · 미승인). 지존만.
+  if (parts[1] === 'rooms' && parts.length === 6 && parts[3] === 'messages' && parts[5] === 'decision') {
+    if (method !== 'POST') return json({ ok: false, error: 'method_not_allowed' }, 405, { allow: 'POST, OPTIONS' });
+    return decisionRoute(request, env, url, principal, method, decodeURIComponent(parts[2]), parts[4], '');
+  }
+
+  // POST · DELETE /api/rooms/:slug/messages/:id/approve — 승인 숏컷 (POST=승인, DELETE=미결정으로 되돌리기). 지존만.
+  if (parts[1] === 'rooms' && parts.length === 6 && parts[3] === 'messages' && parts[5] === 'approve') {
+    if (method !== 'POST' && method !== 'DELETE') {
+      return json({ ok: false, error: 'method_not_allowed' }, 405, { allow: 'POST, DELETE, OPTIONS' });
+    }
+    return decisionRoute(
+      request,
+      env,
+      url,
+      principal,
+      method,
+      decodeURIComponent(parts[2]),
+      parts[4],
+      method === 'POST' ? 'approved' : 'rejected'
+    );
   }
 
   return json({ ok: false, error: 'not_found', message: '알 수 없는 API 경로입니다. /api/docs 를 확인하세요.' }, 404);

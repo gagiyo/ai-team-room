@@ -23,7 +23,18 @@ create table if not exists messages (
   pinned        integer not null default 0,          -- 1 = 고정(영구 보관, 정리 제외)
   retention_kind text not null default 'normal',     -- 'normal' 90일 · 'casual' 10일
   hidden_at     text,                                -- 정리 1단계: 숨김 시각(복원 가능)
-  deleted_at    text                                 -- 정리 2단계: 유예 지난 뒤 실제 삭제 표시
+  deleted_at    text,                                -- 정리 2단계: 유예 지난 뒤 실제 삭제 표시
+  -- 안건 · 지존 결정 (2026-11-26 추가) — 기존 DB 는 _worker.js 가 ALTER TABLE ADD COLUMN 으로 스스로 붙입니다.
+  --   결정: approved(승인) / rejected(미승인, 새 안건의 기본값) / held(보류) — 지존만 바꿉니다.
+  --   수명 주기: 미승인 7일 뒤 삭제 · 보류 30일 뒤 알람(hold_notified_at) + 7일 뒤 삭제 · 승인은 정리 제외.
+  agenda          integer,                           -- 1 = 안건, 0 = 안건 아님, NULL = 본문의 [안건] 같은 표시로 자동 판정
+  approved_at     text,                              -- 지존 승인 시각
+  approved_by     text,                              -- 승인한 지존 이름
+  rejected_at     text,                              -- 지존 미승인 시각 (없으면 작성 시각부터 7일)
+  rejected_by     text,                              -- 미승인한 지존 이름
+  held_at         text,                              -- 지존 보류 시각 (이 시점부터 30일 뒤 알람)
+  held_by         text,                              -- 보류를 정한 지존 이름
+  hold_notified_at text                              -- 보류 30일 알람 시각 (이 시점부터 7일 뒤 삭제)
 );
 
 create index if not exists idx_messages_room on messages(room_slug, id);

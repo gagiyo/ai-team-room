@@ -58,7 +58,7 @@
   .aistat .adot.on{background:var(--ok);box-shadow:0 0 0 3px rgba(74,222,128,.14)}
   .aistat .chev{font-size:13px;line-height:1;opacity:.65}
   .navscrim{display:none;position:fixed;inset:0;background:#0008;border:0;padding:0;margin:0;z-index:38;-webkit-tap-highlight-color:transparent}
-  .rooms{display:flex;flex-direction:column;gap:3px;overflow:auto}
+  .rooms{display:flex;flex-direction:column;gap:3px;overflow:auto;min-height:0}
   .rooms .label{font-size:11px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;padding:4px 8px 6px}
   .room{
     display:flex;align-items:center;gap:9px;width:100%;text-align:left;
@@ -72,6 +72,42 @@
   .room .rdesc{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .room .cnt{margin-left:auto;background:var(--accent);color:#fff;font-size:10.5px;font-weight:700;border-radius:9px;padding:1px 6px;min-width:18px;text-align:center}
   .roomsline{flex:1}
+
+  /* ---------- 왼쪽 프레임: 안건 · 미결정 요약 ---------- */
+  .agendas{flex:0 1 auto;display:flex;flex-direction:column;min-height:0;max-height:38vh;border-top:1px solid var(--line);padding-top:10px;gap:6px}
+  .agendas .aghead{display:flex;align-items:center;gap:6px;padding:0 6px}
+  .agendas .aghead b{font-size:12.5px;letter-spacing:-0.01em}
+  .agendas .aghead .agsum{margin-left:auto;font-size:10.5px;color:var(--muted);white-space:nowrap}
+  .agtabs{display:flex;gap:4px;padding:0 4px}
+  .agtabs button{
+    flex:1 1 0;display:flex;align-items:center;justify-content:center;gap:3px;
+    background:#2b3240;border:1px solid var(--line);border-radius:8px;padding:3px 2px;
+    font-size:10.5px;color:#a9b5c6;white-space:nowrap;
+  }
+  .agtabs button b{font-size:10.5px;font-weight:700;color:#dbe3ee}
+  .agtabs button.on{background:var(--accent-dim);border-color:#7a3a51;color:#ffd9e6}
+  .agtabs button.on b{color:#fff}
+  .aglist{flex:1 1 auto;overflow-y:auto;min-height:0;display:flex;flex-direction:column;gap:4px;padding:0 2px 2px}
+  .agrow{display:flex;flex-direction:column;gap:3px;background:#232936;border:1px solid #333b4a;border-radius:9px;padding:5px 7px}
+  .agrow:hover{border-color:#4a5468}
+  .agrow.alarm{border-color:#6b5424;background:#2b2618}
+  .agrow .agtop{display:flex;align-items:center;gap:5px;min-width:0}
+  .agrow .agopen{flex:1 1 auto;min-width:0;background:transparent;border:0;padding:0;text-align:left;color:#dbe3ee;font-size:11.5px;line-height:1.45;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  .agrow .agopen:hover{color:#fff}
+  .agrow .agwho{font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .agrow .agacts{display:flex;gap:4px;margin-left:auto;flex:0 0 auto}
+  .agrow .agacts .decidebtn{padding:0 6px;font-size:10px}
+  .agchip{flex:0 0 auto;font-size:10px;font-weight:700;border-radius:6px;padding:0 5px;line-height:1.6;border:1px solid #414b5d;color:var(--muted);background:#2b3240}
+  .agchip.rejected{color:#ffb3c0;border-color:#6b3341;background:#3a2129}
+  .agchip.held{color:#a9c7ff;border-color:#3a4f7a;background:#1f2a40}
+  .agchip.approved{color:#9ae6b4;border-color:#2f5c41;background:#1e3327}
+  .agdday{font-size:10px;color:var(--muted);white-space:nowrap}
+  .agdday.warn{color:#ffd08a;font-weight:700}
+  .agdday.due{color:#ff9bac;font-weight:700}
+  .alarmbar{display:flex;align-items:flex-start;gap:6px;background:#3a2c10;border:1px solid #7a5a20;border-radius:8px;padding:5px 7px;font-size:11px;color:#ffd08a;line-height:1.45}
+  .alarmbar b{color:#ffe4b3}
+  .agempty{font-size:11px;color:#8f9bb0;padding:6px;line-height:1.5}
+  .attachbtn.agenda-on{border-color:#6b5a2a;color:#ffe0a3;background:#3a3016}
   .sidefoot{border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:8px}
   .sidefoot .who{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px}
   .sidefoot .who .dot{width:7px;height:7px;border-radius:50%;background:var(--ok)}
@@ -164,8 +200,23 @@
   /* 보관 표시 — 고정(영구) · 잡담(10일) */
   .badge.pin{color:#ffd166;border-color:#6b5a2a;background:#3d3318}
   .badge.casual{color:#ffb3a7;border-color:#6b3a33;background:#3a2a27}
+  /* 안건 · 지존 결정 */
+  .badge.agenda{color:#ffe0a3;border-color:#6b5a2a;background:#3a3016}
+  .badge.agenda-yes{color:#9ae6b4;border-color:#2f5c41;background:#1e3327}
+  .badge.agenda-no{color:#ffb3c0;border-color:#6b3341;background:#3a2129}
+  .badge.agenda-hold{color:#a9c7ff;border-color:#3a4f7a;background:#1f2a40}
+  .badge.agenda-alarm{color:#ffd08a;border-color:#7a5a20;background:#3a2c10;box-shadow:0 0 0 1px #7a5a2055}
+  .decidebtn{
+    display:inline-flex;align-items:center;gap:3px;margin:0 2px 0 0;padding:1px 8px;border-radius:8px;
+    background:#2b3240;border:1px solid #414b5d;color:#cdd6e4;font-size:11px;font-weight:600;line-height:1.6;
+  }
+  .decidebtn:hover{border-color:#5b6579;color:#fff}
+  .decidebtn.yes.on{background:#1e3327;border-color:#2f5c41;color:#9ae6b4}
+  .decidebtn.no.on{background:#3a2129;border-color:#6b3341;color:#ffb3c0}
+  .decidebtn.hold.on{background:#1f2a40;border-color:#3a4f7a;color:#a9c7ff}
   .msgacts .actbtn.pin-on{color:#ffd166;border-color:#6b5a2a}
   .msgacts .actbtn.casual-on{color:#ffb3a7;border-color:#6b3a33}
+  .msgacts .actbtn.agenda-on{color:#ffe0a3;border-color:#6b5a2a}
   .time{font-size:11px;color:#8f9bb0}
   .content{font-size:15px;line-height:1.68;letter-spacing:-0.01em;word-break:break-word;overflow-wrap:anywhere}
   .content strong{font-weight:700;color:#fff}
@@ -356,6 +407,16 @@
       </div>
     </div>
     <div class="rooms" id="roomList"><div class="label">회의실</div></div>
+    <div class="agendas" id="agendaBox">
+      <div class="aghead"><b>안건</b><span class="agsum" id="agendaSum"></span></div>
+      <div id="agendaAlarms"></div>
+      <div class="agtabs" id="agendaTabs">
+        <button type="button" data-adec="rejected" class="on">미승인 <b id="cntRejected">0</b></button>
+        <button type="button" data-adec="held">보류 <b id="cntHeld">0</b></button>
+        <button type="button" data-adec="approved">승인 <b id="cntApproved">0</b></button>
+      </div>
+      <div class="aglist" id="agendaList"></div>
+    </div>
     <div class="roomsline"></div>
     <div class="sidefoot">
       <div class="who"><span class="dot" id="statusDot"></span><span id="statusText">연결 중…</span></div>
@@ -401,12 +462,13 @@
         <select id="senderSel" aria-label="보내는 사람"></select>
         <input type="file" id="fileInput" hidden accept="image/*,.html,.htm,.md,.txt,.csv,.pdf,.xlsx,.xls,.zip,.json">
         <button type="button" class="attachbtn" id="attachBtn" title="이미지·파일 첨부" aria-label="이미지·파일 첨부">📎</button>
+        <button type="button" class="attachbtn" id="agendaBtn" title="안건으로 올리기 — 지존 승인·미승인 대상" aria-label="안건으로 올리기" aria-pressed="false">🏛</button>
       </div>
       <div class="crow crow-send">
         <textarea id="input" rows="1" placeholder="메시지를 입력하세요"></textarea>
         <button id="sendBtn">보내기</button>
       </div>
-      <div class="hint"><span>Enter 전송 · Shift+Enter 줄바꿈</span><span>@ 를 치면 참여자 목록</span><span>**굵게** `코드` - 목록</span></div>
+      <div class="hint"><span>Enter 전송 · Shift+Enter 줄바꿈</span><span>@ 를 치면 참여자 목록</span><span>🏛 안건은 지존 승인·미승인·보류 대상</span></div>
     </div>
   </main>
 </div>
@@ -485,7 +547,14 @@
     hiddenCount: 0,
     readOnly: false,
     members: [],
-    membersAt: 0
+    membersAt: 0,
+    canApprove: false,
+    agendas: [],
+    agendaCounts: {approved:0, rejected:0, held:0},
+    agendaAlarms: 0,
+    agendaFilter: 'rejected',
+    agendaDraft: false,
+    pendingScrollTo: 0
   };
 
   var $ = function(id){ return document.getElementById(id); };
@@ -497,7 +566,9 @@
       elMemberStack = $('membersStack'), elMemberClock = $('memberClock'),
       elAiCount = $('aiCount'), elAiDot = $('aiDot'), elNavScrim = $('navScrim'),
       elMain = document.querySelector('.main'),
-      elMentionPop = $('mentionPop'), elOlderBar = $('olderBar'), elOlderBtn = $('olderBtn');
+      elMentionPop = $('mentionPop'), elOlderBar = $('olderBar'), elOlderBtn = $('olderBtn'),
+      elAgendaList = $('agendaList'), elAgendaTabs = $('agendaTabs'), elAgendaSum = $('agendaSum'),
+      elAgendaAlarms = $('agendaAlarms'), elAgendaBtn = $('agendaBtn');
 
   /* ---------- helpers ---------- */
   function esc(s){
@@ -571,6 +642,12 @@
   function kstDay(iso){
     try {
       return new Date(iso).toLocaleDateString('ko-KR', {timeZone:'Asia/Seoul', year:'numeric', month:'long', day:'numeric', weekday:'short'});
+    } catch(e){ return ''; }
+  }
+  /* 배지 설명(title)에 쓸 날짜+시각 */
+  function kstFull(iso){
+    try {
+      return new Date(iso).toLocaleString('ko-KR', {timeZone:'Asia/Seoul', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false});
     } catch(e){ return ''; }
   }
   function api(path, opts){
@@ -723,17 +800,6 @@
           localStorage.setItem('ai_team_room_key', state.key);
           elGate.hidden = true;
           boot();
-          // 공용 API_KEY 로 들어온 경우: 조회는 되지만 발송은 403 이므로 미리 알린다.
-          fetch('/api/me', {headers:{'X-Room-Key': state.key}, cache:'no-store'})
-            .then(function(r){ return r.json(); })
-            .then(function(me){
-              state.readOnly = !!(me && me.kind === 'api');
-              if (state.readOnly){
-                setStatus(false, '공용 API_KEY(읽기 전용)로 입장했습니다 · 메시지는 웹 입장 비밀번호 키로 로그인해야 보낼 수 있어요');
-                renderAll({keepScroll:true});
-              }
-            })
-            .catch(function(){});
           return true;
         }
         return false;
@@ -820,6 +886,7 @@
         $('roomName').textContent = cur.slug;
         $('roomDesc').textContent = cur.name + ' · ' + (cur.description || '');
       }
+      renderAgendas();
     });
   }
   function switchRoom(slug){
@@ -871,6 +938,33 @@
           (m.pinned ? '<span class="badge pin" title="고정 — 기간과 무관하게 영구 보관">📌 영구보관</span>' : '') +
           (m.retention === 'casual' && !m.pinned ? '<span class="badge casual" title="잡담 — 10일 뒤 정리">10일</span>' : '') +
           (m.hidden ? '<span class="badge" title="정리로 숨겨진 글">숨김</span>' : '') +
+          (m.agenda ? '<span class="badge agenda" title="안건 — 지존이 승인·미승인·보류를 정합니다">🏛 안건</span>' : '') +
+          (m.agenda && m.decision === 'approved'
+            ? '<span class="badge agenda-yes" title="지존 승인 · ' + esc((m.approved_by || '지존') + ' · ' + kstFull(m.approved_at)) + '">✅ 지존 승인 · ' + esc(kstTime(m.approved_at)) + '</span>'
+            : '') +
+          (m.agenda && m.decision === 'rejected'
+            ? '<span class="badge agenda-no" title="' +
+                (m.rejected_at
+                  ? '지존 미승인 · ' + esc(kstFull(m.rejected_at))
+                  : '아직 지존 결정 전 — 기본 미승인 (작성 ' + esc(kstFull(m.created_at)) + ')') +
+                (m.deadline_at ? ' · ' + esc(kstFull(m.deadline_at)) + '에 삭제 예정' : '') +
+              '">⛔ 미승인' + (m.rejected_at ? ' · ' + esc(kstTime(m.rejected_at)) : '') + '</span>'
+            : '') +
+          (m.agenda && m.decision === 'rejected'
+            ? '<span class="agdday' + (m.days_left != null && m.days_left <= 1 ? ' due' : (m.days_left != null && m.days_left <= 3 ? ' warn' : '')) + '" title="미승인 7일 뒤 자동 삭제">' + esc(ddayText(m)) + '</span>'
+            : '') +
+          (m.agenda && m.decision === 'held'
+            ? '<span class="badge ' + (m.hold_notified_at ? 'agenda-alarm' : 'agenda-hold') + '" title="지존 보류 · ' + esc(kstFull(m.held_at || m.created_at)) + (m.deadline_at ? ' — ' + esc(kstFull(m.deadline_at)) + '에 삭제 예정' : '') + '">' +
+                (m.hold_notified_at ? '⚠ 보류 알람' : '⏸ 보류') + (m.held_at ? ' · ' + esc(kstTime(m.held_at)) : '') + '</span>'
+            : '') +
+          (m.agenda && m.decision === 'held'
+            ? '<span class="agdday' + (m.alarm_due || m.hold_notified_at || (m.days_left != null && m.days_left <= 3) ? ' warn' : '') + '" title="보류 30일 뒤 알람, 알람 뒤 7일 뒤 삭제">' + esc(ddayText(m)) + '</span>'
+            : '') +
+          (m.agenda && !m.deleted && state.canApprove
+            ? '<button type="button" class="decidebtn yes' + (m.decision === 'approved' ? ' on' : '') + '" data-decide="' + m.id + '" data-decision="approved" title="승인 — 기존 보관 정책으로 남깁니다">승인</button>' +
+              '<button type="button" class="decidebtn no' + (m.decision === 'rejected' ? ' on' : '') + '" data-decide="' + m.id + '" data-decision="rejected" title="미승인 — 7일 뒤 삭제됩니다">미승인</button>' +
+              '<button type="button" class="decidebtn hold' + (m.decision === 'held' ? ' on' : '') + '" data-decide="' + m.id + '" data-decision="held" title="보류 — 30일 뒤 알람, 알람 뒤 7일 뒤 삭제">보류</button>'
+            : '') +
           '</div>';
     if (m.reply_to){
       out += '<div class="replyq" data-target="' + m.reply_to.id + '"><b>' + esc(m.reply_to.sender) + '</b><span>' +
@@ -892,7 +986,10 @@
       '<button type="button" class="actbtn" data-reply="' + m.id + '">답글</button>' +
       (m.deleted || state.readOnly
         ? ''
-        : '<button type="button" class="actbtn' + (m.pinned ? ' pin-on' : '') + '" data-pin="' + m.id + '" title="' +
+        : '<button type="button" class="actbtn' + (m.agenda ? ' agenda-on' : '') + '" data-agenda="' + m.id + '" title="' +
+            (m.agenda ? '안건 표시 해제' : '이 글을 안건으로 올리기 — 지존 승인·미승인 대상') + '">' +
+            (m.agenda ? '안건해제' : '🏛 안건') + '</button>' +
+          '<button type="button" class="actbtn' + (m.pinned ? ' pin-on' : '') + '" data-pin="' + m.id + '" title="' +
             (m.pinned ? '고정 해제 (보통 보관으로)' : '고정 — 기간과 무관하게 영구 보관') + '">' +
             (m.pinned ? '고정해제' : '📌 고정') + '</button>' +
           '<button type="button" class="actbtn' + (m.retention === 'casual' ? ' casual-on' : '') + '" data-casual="' + m.id + '" title="' +
@@ -992,6 +1089,11 @@
         state.lastId = list.length ? list[list.length - 1].id : 0;
         state.hasMore = !!d.has_more;
         renderAll();
+        if (state.pendingScrollTo){
+          var target = state.pendingScrollTo;
+          state.pendingScrollTo = 0;
+          scrollToMsg(target);
+        }
       } else if (list.length){
         state.lastId = list[list.length - 1].id;
         appendMessages(list);
@@ -1011,6 +1113,16 @@
     });
   }
   elMessages.addEventListener('click', function(e){
+    var decideBtn = e.target.closest('[data-decide]');
+    if (decideBtn){
+      setDecision(state.room, parseInt(decideBtn.getAttribute('data-decide'), 10), decideBtn.getAttribute('data-decision'));
+      return;
+    }
+    var agendaBtn = e.target.closest('[data-agenda]');
+    if (agendaBtn){
+      toggleAgenda(parseInt(agendaBtn.getAttribute('data-agenda'), 10));
+      return;
+    }
     var pinBtn = e.target.closest('[data-pin]');
     if (pinBtn){
       toggleFlag(parseInt(pinBtn.getAttribute('data-pin'), 10), 'pinned');
@@ -1182,6 +1294,201 @@
       .catch(function(err){
         setStatus(false, '삭제 실패 · ' + (err && err.message ? err.message : '다시 시도'));
       });
+  }
+
+  /* ---------- 안건 · 지존 결정(승인 / 미승인 / 보류) + 왼쪽 요약 ---------- */
+  var DECISION_LABEL = {approved:'승인', rejected:'미승인', held:'보류'};
+  function decisionLabel(d){ return DECISION_LABEL[d] || '미승인'; }
+  function agendaRoomName(slug){
+    var r = (state.rooms || []).filter(function(x){ return x.slug === slug; })[0];
+    return r ? r.name : (slug || '');
+  }
+  /* 남은 기한 — 미승인: 삭제까지 D-n · 보류: 알람까지 D-n, 알람 뒤에는 삭제까지 D-n */
+  function ddayText(a){
+    if (!a || !a.agenda) return '';
+    if (a.decision === 'approved') return '';
+    if (a.decision === 'held'){
+      if (a.hold_notified_at || a.stage === 'hold_alarm' || a.stage === 'hold_expired'){
+        return a.days_left == null ? '삭제 예정' : (a.days_left <= 0 ? '삭제 예정' : '삭제 D-' + a.days_left);
+      }
+      if (a.alarm_due) return '알람 도래';
+      var left = a.alarm_days_left;
+      if (left == null && a.lifecycle) left = a.lifecycle.alarm_days_left;
+      return left == null ? '' : (left <= 0 ? '알람 도래' : '알람 D-' + left);
+    }
+    return a.days_left == null ? '' : (a.days_left <= 0 ? '삭제 예정' : 'D-' + a.days_left);
+  }
+  function ddayClass(a){
+    if (!a || a.decision === 'approved') return '';
+    if (a.decision === 'held' && (a.hold_notified_at || a.alarm_due || a.stage === 'hold_alarm')) return ' warn';
+    if (a.days_left != null && a.days_left <= 0) return ' due';
+    if (a.days_left != null && a.days_left <= 3) return ' warn';
+    return '';
+  }
+  function findAgenda(room, id){
+    return (state.agendas || []).filter(function(a){ return a.id === id && (!room || a.room === room); })[0] || null;
+  }
+  function applyDecision(message){
+    if (!message) return;
+    var m = findMsg(message.id);
+    if (!m) return;
+    m.agenda = !!message.agenda;
+    m.decision = message.decision || null;
+    m.approved = !!message.approved;
+    m.approved_at = message.approved_at || null;
+    m.approved_by = message.approved_by || null;
+    m.rejected = !!message.rejected;
+    m.rejected_at = message.rejected_at || null;
+    m.rejected_by = message.rejected_by || null;
+    m.held = !!message.held;
+    m.held_at = message.held_at || null;
+    m.held_by = message.held_by || null;
+    m.hold_notified_at = message.hold_notified_at || null;
+    m.deadline_at = message.deadline_at || null;
+    m.days_left = message.days_left === undefined ? null : message.days_left;
+    m.alarm_due = !!message.alarm_due;
+    m.lifecycle = message.lifecycle || m.lifecycle;
+    m.pinned = !!message.pinned;
+    renderAll({keepScroll: true});
+  }
+  /* 승인 · 미승인 · 보류 — 서버가 지존인지 확인한다(아니면 403) */
+  function setDecision(room, id, decision){
+    room = room || state.room;
+    var msg = (room === state.room) ? findMsg(id) : null;
+    var row = findAgenda(room, id);
+    var current = (msg && msg.decision) || (row && row.decision) || 'rejected';
+    if (current === decision) return; // 이미 그 상태면 바꿀 것이 없다
+    // 한 번 정한 뒤 다른 상태로 바꾸는 것은 확인을 받는다(기본 미승인 → 결정은 바로).
+    if (current !== 'rejected' && !window.confirm(decisionLabel(current) + '을 ' + decisionLabel(decision) + '(으)로 바꿀까요?')) return;
+    api('/api/rooms/' + encodeURIComponent(room) + '/messages/' + id + '/decision', {method:'POST', body: JSON.stringify({decision: decision})})
+      .then(function(d){
+        if (room === state.room && d && d.message) applyDecision(d.message);
+        loadAgendas();
+        loadRooms().catch(function(){});
+        setStatus(true, '안건 #' + id + '을(를) ' + decisionLabel(decision) + '(으)로 정했습니다 · ' + kstTime(new Date().toISOString()));
+      })
+      .catch(function(err){
+        setStatus(false, '결정하지 못했습니다 · ' + (err && err.message ? err.message : '다시 시도'));
+      });
+  }
+  /* 안건 표시 토글 — 그 글을 쓴 사람 또는 지존만(서버 확인) */
+  function toggleAgenda(id){
+    var m = findMsg(id);
+    if (!m) return;
+    var next = !m.agenda;
+    api('/api/rooms/' + encodeURIComponent(state.room) + '/messages/' + id, {method:'PATCH', body: JSON.stringify({agenda: next})})
+      .then(function(d){
+        if (d && d.message) applyDecision(d.message);
+        loadAgendas();
+        setStatus(true, (next ? '안건으로 올렸습니다 (지존이 승인·미승인·보류를 정합니다)' : '안건 표시를 해제했습니다') + ' · ' + kstTime(new Date().toISOString()));
+      })
+      .catch(function(err){
+        setStatus(false, '안건 표시를 바꾸지 못했습니다 · ' + (err && err.message ? err.message : '다시 시도'));
+      });
+  }
+  function renderAgendas(){
+    var counts = state.agendaCounts || {approved:0, rejected:0, held:0};
+    if ($('cntRejected')) $('cntRejected').textContent = counts.rejected || 0;
+    if ($('cntHeld')) $('cntHeld').textContent = counts.held || 0;
+    if ($('cntApproved')) $('cntApproved').textContent = counts.approved || 0;
+    if (elAgendaSum){
+      elAgendaSum.textContent = (counts.rejected || counts.held)
+        ? '미승인 ' + (counts.rejected || 0) + ' · 보류 ' + (counts.held || 0)
+        : '미승인·보류 없음';
+    }
+    // 보류 30일이 지나 알람이 온 건 — 눈에 보이게 따로 알린다.
+    if (elAgendaAlarms){
+      elAgendaAlarms.innerHTML = state.agendaAlarms
+        ? '<div class="alarmbar">⚠ <span><b>보류 30일 지난 안건 ' + state.agendaAlarms + '건</b> — 별도 조치가 없으면 7일 뒤 삭제됩니다.</span></div>'
+        : '';
+    }
+    if (elAgendaTabs){
+      Array.prototype.forEach.call(elAgendaTabs.querySelectorAll('button'), function(b){
+        b.classList.toggle('on', b.getAttribute('data-adec') === state.agendaFilter);
+      });
+    }
+    if (!elAgendaList) return;
+    var list = (state.agendas || []).filter(function(a){ return (a.decision || 'rejected') === state.agendaFilter; });
+    if (!list.length){
+      elAgendaList.innerHTML = '<div class="agempty">' +
+        (state.agendaFilter === 'rejected'
+          ? '미승인 안건이 없습니다.<br>안건 글이 올라오면 여기 모입니다.'
+          : decisionLabel(state.agendaFilter) + '한 안건이 없습니다.') +
+        '</div>';
+      return;
+    }
+    elAgendaList.innerHTML = list.map(function(a){
+      var dec = a.decision || 'rejected';
+      var tip = dec === 'approved'
+        ? '승인 — 기존 보관 정책'
+        : dec === 'held'
+          ? '보류 — 30일 뒤 알람, 알람 뒤 7일 뒤 삭제'
+          : '미승인 — 7일 뒤 삭제';
+      return '<div class="agrow' + (ddayClass(a).indexOf('warn') !== -1 ? ' alarm' : '') + '">' +
+        '<div class="agtop">' +
+          '<span class="agchip ' + esc(dec) + '" title="' + esc(tip) + '">' + esc(decisionLabel(dec)) + '</span>' +
+          '<span class="agdday' + ddayClass(a) + '">' + esc(ddayText(a)) + '</span>' +
+          '<button type="button" class="agopen" data-agopen="' + a.id + '" data-room="' + esc(a.room) + '" title="' + esc('#' + a.id + ' · ' + agendaRoomName(a.room) + '로 이동') + '">' +
+            esc(a.excerpt || ('#' + a.id)) + '</button>' +
+        '</div>' +
+        '<div class="agtop">' +
+          '<span class="agwho">#' + a.id + ' · ' + esc(agendaRoomName(a.room)) + ' · ' + esc(a.sender || '') + ' · ' + esc(kstTime(a.created_at)) + '</span>' +
+          (state.canApprove
+            ? '<span class="agacts">' +
+                '<button type="button" class="decidebtn yes' + (dec === 'approved' ? ' on' : '') + '" data-decide="' + a.id + '" data-decision="approved" data-room="' + esc(a.room) + '" title="승인">승인</button>' +
+                '<button type="button" class="decidebtn no' + (dec === 'rejected' ? ' on' : '') + '" data-decide="' + a.id + '" data-decision="rejected" data-room="' + esc(a.room) + '" title="미승인 — 7일 뒤 삭제">미승인</button>' +
+                '<button type="button" class="decidebtn hold' + (dec === 'held' ? ' on' : '') + '" data-decide="' + a.id + '" data-decision="held" data-room="' + esc(a.room) + '" title="보류 — 30일 뒤 알람">보류</button>' +
+              '</span>'
+            : '') +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+  function loadAgendas(){
+    return api('/api/agendas?decision=all&limit=200').then(function(d){
+      state.agendas = d.agendas || [];
+      state.agendaCounts = d.counts || {approved:0, rejected:0, held:0};
+      state.agendaAlarms = d.alarms || 0;
+      renderAgendas();
+    }).catch(function(){});
+  }
+  /* 왼쪽 요약에서 안건을 누르면 그 방·그 글로 이동 */
+  function scrollToMsg(id){
+    var el = document.getElementById('m' + id);
+    if (!el) return false;
+    el.scrollIntoView({block:'center', behavior:'smooth'});
+    el.classList.remove('flash');
+    void el.offsetWidth;
+    el.classList.add('flash');
+    return true;
+  }
+  function openAgenda(room, id){
+    if (!room) return;
+    closeNav();
+    if (room === state.room){ scrollToMsg(id); return; }
+    state.pendingScrollTo = id;
+    switchRoom(room);
+  }
+  if ($('agendaBox')){
+    $('agendaBox').addEventListener('click', function(e){
+      var dec = e.target.closest('[data-decide]');
+      if (dec){
+        setDecision(dec.getAttribute('data-room') || state.room, parseInt(dec.getAttribute('data-decide'), 10), dec.getAttribute('data-decision'));
+        return;
+      }
+      var open = e.target.closest('[data-agopen]');
+      if (open){
+        openAgenda(open.getAttribute('data-room'), parseInt(open.getAttribute('data-agopen'), 10));
+      }
+    });
+  }
+  if (elAgendaTabs){
+    elAgendaTabs.addEventListener('click', function(e){
+      var b = e.target.closest('[data-adec]');
+      if (!b) return;
+      state.agendaFilter = b.getAttribute('data-adec');
+      renderAgendas();
+    });
   }
 
   /* ---------- attachment ---------- */
@@ -1366,6 +1673,7 @@
     var payload = {sender: state.sender, content: content};
     if (state.replyTo) payload.reply_to_id = state.replyTo.id;
     if (state.attachment) payload.attachment = state.attachment;
+    if (state.agendaDraft) payload.agenda = true;
     elSend.disabled = true;
     api('/api/rooms/' + encodeURIComponent(state.room) + '/messages', {method:'POST', body: JSON.stringify(payload)})
       .then(function(d){
@@ -1374,12 +1682,14 @@
         closeMention();
         state.replyTo = null; elReplyBar.hidden = true;
         clearAttachment();
+        setAgendaDraft(false);
         if (d.message){
           if (d.message.id > state.lastId) {
             state.lastId = d.message.id;
             appendMessages([d.message]);
             scrollBottom(true);
           }
+          if (d.message.agenda) loadAgendas();
         }
         loadRooms().catch(function(){});
       })
@@ -1428,15 +1738,49 @@
     state.sender = elSender.value;
     localStorage.setItem('ai_team_room_sender', state.sender);
   });
+  /* 안건으로 올리기 토글 — 보낼 때 payload.agenda = true 가 붙는다 */
+  function setAgendaDraft(on){
+    state.agendaDraft = !!on;
+    if (!elAgendaBtn) return;
+    elAgendaBtn.classList.toggle('agenda-on', state.agendaDraft);
+    elAgendaBtn.setAttribute('aria-pressed', state.agendaDraft ? 'true' : 'false');
+    elAgendaBtn.title = state.agendaDraft
+      ? '안건으로 올립니다 — 누르면 해제'
+      : '안건으로 올리기 — 지존 승인·미승인 대상';
+  }
+  if (elAgendaBtn){
+    elAgendaBtn.addEventListener('click', function(){
+      setAgendaDraft(!state.agendaDraft);
+      elInput.focus();
+    });
+  }
 
   /* ---------- boot ---------- */
+  /* 내 권한 확인 — 공용 키(읽기 전용)인지, 지존(승인·미승인 버튼)인지 */
+  function loadMe(){
+    return fetch('/api/me', {headers:{'X-Room-Key': state.key}, cache:'no-store'})
+      .then(function(r){ return r.json(); })
+      .then(function(me){
+        if (!me || !me.ok) return;
+        state.readOnly = me.kind === 'api';
+        state.canApprove = !!me.can_approve;
+        if (state.readOnly){
+          setStatus(false, '공용 API_KEY(읽기 전용)로 입장했습니다 · 메시지는 웹 입장 비밀번호 키로 로그인해야 보낼 수 있어요');
+        }
+        renderAll({keepScroll:true});
+        renderAgendas();
+      })
+      .catch(function(){});
+  }
   function boot(){
     elGate.hidden = true;
     updateTitle();
     renderSenders();
+    loadMe();
     loadRooms().catch(function(){ setStatus(false, '연결 끊김'); });
     loadMessages(true);
     loadMembers();
+    loadAgendas();
     if (state.timer) clearInterval(state.timer);
     var tick = 0;
     state.timer = setInterval(function(){
@@ -1444,7 +1788,10 @@
       // 화면을 보고 있지 않아도 새 글은 세어 둔다(탭 제목 (N) 표시용).
       // 백그라운드 탭은 브라우저가 타이머를 늦추므로 실제 확인 간격은 더 길 수 있다.
       loadMessages(false);
-      if (tick % 5 === 0) loadRooms().catch(function(){});
+      if (tick % 5 === 0){
+        loadRooms().catch(function(){});
+        loadAgendas();
+      }
       // AI 숫자는 패널을 닫아 두어도 15초마다 실제 연결 상태로 갱신한다
       if (Date.now() - state.membersAt > 15000) loadMembers();
     }, POLL_MS);
@@ -1454,6 +1801,7 @@
         updateTitle();
         loadMessages(false);
         loadRooms().catch(function(){});
+        loadAgendas();
       }
     });
   }
