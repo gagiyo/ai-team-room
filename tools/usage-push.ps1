@@ -76,6 +76,37 @@ function Get-ClaudeWebUsage {
   return ($lines -join "`n")
 }
 
+# Claude: CodexBar 트레이 앱이 새로고침할 때마다 적어 두는 기록 파일(DPAPI 암호화)에서 최신 값을 꺼낸다.
+# codexbar-cli 는 트레이 앱에 넣은 수동 쿠키를 못 쓰지만, 이 파일은 트레이 앱이 읽은 값 그대로다.
+$BurndownFile = Join-Path $env:APPDATA 'CodexBar\history\claude-burndown-v1.json'
+function Get-ClaudeTrayUsage {
+  if (-not (Test-Path $BurndownFile)) { return $null }
+  Add-Type -AssemblyName System.Security
+  $o = Get-Content -Path $BurndownFile -Raw -Encoding UTF8 | ConvertFrom-Json
+  if ($o.payload) {
+    $b = [Convert]::FromBase64String($o.payload)
+    $o = [Text.Encoding]::UTF8.GetString([Security.Cryptography.ProtectedData]::Unprotect($b, $null, 'CurrentUser')) | ConvertFrom-Json
+  }
+  $lines = @()
+  $newest = $null
+  foreach ($acc in $o.accounts.PSObject.Properties) {
+    foreach ($w in @($acc.Value)) {
+      $e = @($w.entries) | Sort-Object { [DateTimeOffset]::Parse($_.captured_at) } | Select-Object -Last 1
+      if (-not $e) { continue }
+      $label = switch -Regex ($w.name) { '^session' { 'Session (5h)' } '^week' { 'Weekly' } default { if ($w.window_minutes -ge 10000) { 'Weekly' } else { $w.name } } }
+      $lines += ('  {0}: {1}% used ({2})' -f $label, [Math]::Round([double]$e.used_percent), (Format-Left $e.resets_at))
+      $cap = [DateTimeOffset]::Parse($e.captured_at)
+      if (-not $newest -or $cap -gt $newest) { $newest = $cap }
+    }
+    break  # 계정이 여럿이면 첫 계정만(지금은 하나)
+  }
+  if (-not $lines.Count) { return $null }
+  $age = [int][Math]::Round(([DateTimeOffset]::Now - $newest).TotalMinutes)
+  $head = 'Claude (CodexBar)'
+  if ($age -gt 30) { $head += ('  · 트레이 앱 기록이 {0}분 전 값입니다(트레이 앱이 꺼져 있으면 갱신 안 됨)' -f $age) }
+  return (@($head) + $lines) -join "`n"
+}
+
 function Find-Cli {
   # 한 번 찾은 위치는 기억해 두고 다음부터 바로 쓴다(매번 Program Files 를 뒤지지 않게)
   if (Test-Path $CliCache) {
@@ -125,9 +156,11 @@ try {
   $text = (($text -split "`r?`n") | Where-Object { $_ -notmatch '^\s*\d{4}-\d\d-\d\dT\S+\s+(WARN|INFO|DEBUG|TRACE|ERROR)\b' }) -join "`n"
   $text = $text.Trim()
 
-  # Claude: sessionKey 가 있으면 claude.ai 에서 직접 읽어, codexbar 의 Claude 오류 덩어리를 바꿔 끼운다
+  # Claude: ① 트레이 앱 기록 파일 → ② (있으면) sessionKey 로 claude.ai 직접. 찾으면 codexbar 의 Claude 오류 덩어리를 바꿔 끼운다
   try {
-    $cw = Get-ClaudeWebUsage
+    $cw = $null
+    try { $cw = Get-ClaudeTrayUsage } catch { $cw = $null }
+    if (-not $cw) { $cw = Get-ClaudeWebUsage }
     if ($cw) {
       $blocks = @($text -split "`n\s*`n" | Where-Object { $_ -notmatch '^\s*Claude\b' })
       $text = (@($cw) + $blocks) -join "`n`n"
