@@ -1420,7 +1420,7 @@
       else shown.push(b.split('\n').map(usageLineHtml).join('\n'));
     });
     var html = shown.join('\n\n');
-    if (hidden.length) html += '\n\n<span class="uhid">연결 안 된 서비스 ' + hidden.length + '개 숨김: ' + esc(hidden.join(', ')) + '</span>';
+    if (hidden.length) html += '\n\n<span class="uhid" title="' + esc(hidden.join(', ')) + '">연결 안 된 서비스 ' + hidden.length + '개는 숨겼습니다.</span>';
     return html;
   }
   function renderUsage(d){
