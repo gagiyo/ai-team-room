@@ -72,7 +72,7 @@
 
 const SERVER_NAME = 'ai-team-room';
 const SERVER_TITLE = 'AI 팀 회의실';
-const SERVER_VERSION = '1.11.1'; // 2026-11-27 프로젝트 분류 수정: 사이즈핏·스크랩박스 → 완료·수정 중 (#243)
+const SERVER_VERSION = '1.11.2'; // 2026-11-27 개발 방 프로젝트 목록 펼치기/접기 (#248)
 
 // 사람(최종 결정) — AI 숫자 집계에서 뺀다.
 const HUMAN_NAME = '지존';
