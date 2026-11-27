@@ -8,6 +8,7 @@ $Base   = 'https://ai-team-room-120.pages.dev'
 $Dir    = Split-Path -Parent $MyInvocation.MyCommand.Path
 $KeyFile = Join-Path $Dir 'usage-push.key'
 $CliCache = Join-Path $Dir 'usage-push.cli'
+$ClaudeKeyFile = Join-Path $Dir 'usage-claude.key'
 $LogFile = Join-Path $Dir 'usage-push.log'
 
 function Write-Log($msg) {
@@ -26,6 +27,53 @@ function Get-RoomKey {
   $enc = $enc.Trim([char]0xFEFF, [char]0x200B, ' ', "`r", "`n", "`t")
   $sec = ConvertTo-SecureString -String $enc
   return [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
+}
+
+function Read-DpapiFile($path) {
+  $enc = (Get-Content -Path $path -Raw -Encoding UTF8)
+  $enc = $enc.Trim([char]0xFEFF, [char]0x200B, ' ', "`r", "`n", "`t")
+  $sec = ConvertTo-SecureString -String $enc
+  return [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
+}
+
+# Claude 는 codexbar-cli 가 브라우저 쿠키를 못 읽는 경우가 있어(웨일 미지원·크롬/엣지 잠금),
+# usage-setup.ps1 -ClaudeKey 로 넣어 둔 sessionKey 로 claude.ai 사용량을 직접 읽는다. 키는 claude.ai 로만 보낸다.
+function Format-Left($iso) {
+  if (-not $iso) { return '' }
+  try {
+    $t = [DateTimeOffset]::Parse($iso)
+    $d = $t - [DateTimeOffset]::Now
+    if ($d.TotalMinutes -le 0) { return 'resets now' }
+    if ($d.TotalHours -ge 24) { return ('resets in {0}d {1}h' -f [int][Math]::Floor($d.TotalDays), $d.Hours) }
+    return ('resets in {0}h {1}m' -f [int][Math]::Floor($d.TotalHours), $d.Minutes)
+  } catch { return '' }
+}
+function Get-ClaudeWebUsage {
+  if (-not (Test-Path $ClaudeKeyFile)) { return $null }
+  $sk = Read-DpapiFile $ClaudeKeyFile
+  if ($sk -notmatch '=') { $sk = 'sessionKey=' + $sk }
+  $h = @{
+    'Cookie' = $sk
+    'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36'
+    'Accept' = 'application/json'
+    'anthropic-client-platform' = 'web_claude_ai'
+  }
+  $orgs = Invoke-RestMethod -Method Get -Uri 'https://claude.ai/api/organizations' -Headers $h -TimeoutSec 30
+  $org = @($orgs) | Where-Object { $_.capabilities -and (($_.capabilities -join ',') -match 'claude_(pro|max)') } | Select-Object -First 1
+  if (-not $org) { $org = @($orgs) | Select-Object -First 1 }
+  if (-not $org) { throw 'Claude 조직 정보를 못 받았습니다.' }
+  $u = Invoke-RestMethod -Method Get -Uri ("https://claude.ai/api/organizations/" + $org.uuid + "/usage") -Headers $h -TimeoutSec 30
+  $names = @{ five_hour = 'Session (5h)'; seven_day = 'Weekly'; seven_day_opus = 'Weekly Opus'; seven_day_sonnet = 'Weekly Sonnet' }
+  $lines = @('Claude (web)')
+  foreach ($p in $u.PSObject.Properties) {
+    $v = $p.Value
+    if ($v -and ($v.PSObject.Properties.Name -contains 'utilization') -and $v.utilization -ne $null) {
+      $label = $names[$p.Name]; if (-not $label) { $label = $p.Name }
+      $lines += ('  {0}: {1}% used ({2})' -f $label, [Math]::Round([double]$v.utilization), (Format-Left $v.resets_at))
+    }
+  }
+  if ($lines.Count -eq 1) { $lines += '  (사용량 항목을 찾지 못했습니다)' }
+  return ($lines -join "`n")
 }
 
 function Find-Cli {
@@ -64,16 +112,29 @@ try {
   # codexbar-cli 는 안 쓰는 서비스(Codex 등)에 대해 경고(WARN)를 stderr 로 낸다.
   # Windows PowerShell 5.1 은 Stop 모드에서 그걸 오류로 보고 멈추므로, 이 구간만 Continue 로 두고 stdout 만 쓴다.
   $ErrorActionPreference = 'Continue'
-  $text = (& $cli usage -p all 2>$null | Out-String)
+  # -p 를 빼면 CodexBar 설정에서 켠 서비스만 읽는다(86개를 다 돌지 않게)
+  $text = (& $cli usage --no-color 2>$null | Out-String)
   $json = $null
   try {
-    $raw = (& $cli usage -p all --json 2>$null | Out-String).Trim()
+    $raw = (& $cli usage --json 2>$null | Out-String).Trim()
     if ($raw -and ($raw.StartsWith('{') -or $raw.StartsWith('['))) { $json = $raw | ConvertFrom-Json }
   } catch { $json = $null }
   $ErrorActionPreference = 'Stop'
+  $text = ($text -replace "\x1B\[[0-9;]*m", '')
   # 혹시 섞여 들어온 로그 줄(2026-..T.. WARN/INFO ...)은 걷어 낸다
   $text = (($text -split "`r?`n") | Where-Object { $_ -notmatch '^\s*\d{4}-\d\d-\d\dT\S+\s+(WARN|INFO|DEBUG|TRACE|ERROR)\b' }) -join "`n"
   $text = $text.Trim()
+
+  # Claude: sessionKey 가 있으면 claude.ai 에서 직접 읽어, codexbar 의 Claude 오류 덩어리를 바꿔 끼운다
+  try {
+    $cw = Get-ClaudeWebUsage
+    if ($cw) {
+      $blocks = @($text -split "`n\s*`n" | Where-Object { $_ -notmatch '^\s*Claude\b' })
+      $text = (@($cw) + $blocks) -join "`n`n"
+    }
+  } catch {
+    $text = "Claude (web)  Error: claude.ai 에서 사용량을 못 읽었습니다 — " + $_.Exception.Message + " (sessionKey 가 만료됐으면 usage-setup.ps1 -ClaudeKey 로 다시 넣기)`n`n" + $text
+  }
   if (-not $text -and -not $json) { throw "codexbar-cli 가 아무 값도 주지 않았습니다. 트레이 앱에서 Claude 연결 상태를 확인하세요." }
 
   $body = @{ text = $text; json = $json; host = $env:COMPUTERNAME; tool = 'codexbar-cli' } | ConvertTo-Json -Depth 12 -Compress

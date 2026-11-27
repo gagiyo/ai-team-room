@@ -19,6 +19,15 @@ PC·폰 어디서든 무림AI방 위쪽 **📊 사용량** 에서 봅니다.
    ```
 4. 무림AI방 입장 키를 넣으면 끝입니다. 바로 한 번 올리고, 이후 30분마다 창 없이 조용히 올립니다.
 
+## Claude 가 'No cookies available' 로 나올 때
+codexbar-cli 는 브라우저(크롬·엣지·브레이브·파이어폭스) 쿠키만 읽고, 트레이 앱에 직접 넣은 쿠키는 쓰지 못합니다.
+웨일을 쓰거나 브라우저가 쿠키를 잠가 두면 Claude 가 오류로 나옵니다. 그때는 sessionKey 를 스크립트에 한 번 넣습니다:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\usage-setup.ps1 -ClaudeKey
+```
+- sessionKey 는 `usage-claude.key` 에 이 PC·이 계정에서만 풀리게(DPAPI) 저장되고, **claude.ai 로만** 보냅니다(무림방에는 사용률 숫자만).
+- 만료되면 📊 사용량에 'claude.ai 에서 사용량을 못 읽었습니다'가 뜹니다. 같은 명령으로 새 값을 넣으면 됩니다.
+
 ## 간격 바꾸기 · 업데이트
 - 간격 바꾸기: `powershell -ExecutionPolicy Bypass -File .\usage-setup.ps1 -Minutes 60` (키는 다시 묻지 않음)
 - 키 바꾸기: `... usage-setup.ps1 -NewKey`

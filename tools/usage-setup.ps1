@@ -5,7 +5,8 @@
 
 param(
   [int]$Minutes = 30,      # 보고 간격(분)
-  [switch]$NewKey          # 키를 새로 넣고 싶을 때만
+  [switch]$NewKey,         # 키를 새로 넣고 싶을 때만
+  [switch]$ClaudeKey       # Claude sessionKey 를 넣거나 바꿀 때 (claude.ai 에서 직접 사용량 읽기)
 )
 $ErrorActionPreference = 'Stop'
 $Dir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -22,6 +23,14 @@ if ($NewKey -or -not (Test-Path $KeyFile)) {
   Write-Host "키를 저장했습니다 (이 PC·이 계정에서만 풀림)."
 } else {
   Write-Host "[1/3] 저장된 키를 그대로 씁니다. (바꾸려면 -NewKey 를 붙여 실행)"
+}
+
+if ($ClaudeKey) {
+  Write-Host ""
+  Write-Host "[+] Claude sessionKey 를 붙여 넣고 Enter (sk-ant- 로 시작, 화면에 안 보임). claude.ai 로만 보내고 이 PC 에만 암호화 저장합니다." -ForegroundColor Yellow
+  $csec = Read-Host -AsSecureString -Prompt "sessionKey"
+  $csec | ConvertFrom-SecureString | Set-Content -Path (Join-Path $Dir 'usage-claude.key') -Encoding ASCII -NoNewline
+  Write-Host "Claude sessionKey 를 저장했습니다."
 }
 
 $TaskName = 'MurimAI-UsagePush'
