@@ -11,7 +11,7 @@ if (-not (Test-Path $Push)) { throw "같은 폴더에 usage-push.ps1 이 있어�
 Write-Host ""
 Write-Host "[1/3] 무림AI방 입장 키를 붙여 넣고 Enter (입력한 글자는 화면에 안 보이는 게 정상입니다)" -ForegroundColor Yellow
 $sec = Read-Host -AsSecureString -Prompt "입장 키"
-$sec | ConvertFrom-SecureString | Set-Content -Path (Join-Path $Dir 'usage-push.key') -Encoding UTF8
+$sec | ConvertFrom-SecureString | Set-Content -Path (Join-Path $Dir 'usage-push.key') -Encoding ASCII -NoNewline
 Write-Host "키를 저장했습니다 (이 PC·이 계정에서만 풀림)."
 
 $TaskName = 'MurimAI-UsagePush'

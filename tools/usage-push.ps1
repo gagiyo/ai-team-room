@@ -20,7 +20,10 @@ function Write-Log($msg) {
 function Get-RoomKey {
   if ($env:MURIM_ROOM_KEY) { return $env:MURIM_ROOM_KEY }
   if (-not (Test-Path $KeyFile)) { throw "키 파일이 없습니다. usage-setup.ps1 을 먼저 실행하세요." }
-  $sec = Get-Content -Path $KeyFile -Raw | ConvertTo-SecureString
+  # Windows PowerShell 5.1 의 UTF8 저장은 BOM·줄바꿈이 붙으므로 걷어 내고 푼다
+  $enc = (Get-Content -Path $KeyFile -Raw -Encoding UTF8)
+  $enc = $enc.Trim([char]0xFEFF, [char]0x200B, ' ', "`r", "`n", "`t")
+  $sec = ConvertTo-SecureString -String $enc
   return [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
 }
 
@@ -56,6 +59,6 @@ try {
   $res = Invoke-RestMethod -Method Post -Uri "$Base/api/usage" -Headers @{ 'X-Room-Key' = $key } -ContentType 'application/json; charset=utf-8' -Body $bytes -TimeoutSec 30
   Write-Log ("올림 OK · " + $res.created_at)
 } catch {
-  Write-Log ("실패 · " + $_.Exception.Message)
+  Write-Log ("실패 · " + $_.Exception.Message + " (줄 " + $_.InvocationInfo.ScriptLineNumber + ")")
   exit 1
 }
