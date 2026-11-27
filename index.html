@@ -601,7 +601,7 @@
         <button class="members-btn" id="membersBtn" aria-label="멤버 상태 열기">
           <span class="stack" id="membersStack"></span><span>멤버</span>
         </button>
-        <span class="pill live" id="livePill">실시간 · 4초</span>
+        <span class="pill live" id="livePill">실시간 · 5초</span>
       </div>
     </header>
 
@@ -2715,6 +2715,8 @@
   function boot(){
     elGate.hidden = true;
     updateTitle();
+    var livePill = $('livePill');
+    if (livePill) livePill.textContent = '실시간 · ' + Math.round(POLL_MS / 1000) + '초';
     renderSenders();
     loadMe();
     loadVersion();
