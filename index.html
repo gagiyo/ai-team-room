@@ -662,7 +662,7 @@
     <button id="usageClose" aria-label="닫기">×</button>
   </header>
   <div class="plist" id="usageBody"></div>
-  <footer>지존 PC의 사용량 보고 스크립트(tools/usage-push.ps1)가 15분마다 올린 값입니다. 80% 이상은 붉게 표시합니다. 🔄 를 누르면 다시 불러옵니다.</footer>
+  <footer>지존 PC의 사용량 보고 스크립트(tools/usage-push.ps1)가 주기적으로(기본 30분) 올린 값입니다. 80% 이상은 붉게 표시합니다. 🔄 를 누르면 다시 불러옵니다.</footer>
 </aside>
 <aside class="panel" id="memberPanel" hidden aria-label="멤버 상태">
   <header>
@@ -1410,7 +1410,7 @@
     var snap = d && d.latest;
     if (!snap){
       if (elUsageWhen) elUsageWhen.textContent = '';
-      elUsageBody.innerHTML = '<div class="uempty">아직 올라온 사용량이 없습니다.<br>지존 PC에서 <code>tools/usage-push.ps1</code> 설치를 마치면 15분마다 여기에 뜹니다.<br>설치 안내는 저장소 <code>tools/USAGE-SETUP.md</code> 에 있습니다.</div>';
+      elUsageBody.innerHTML = '<div class="uempty">아직 올라온 사용량이 없습니다.<br>지존 PC에서 <code>tools/usage-push.ps1</code> 설치를 마치면 주기적으로(기본 30분) 여기에 뜹니다.<br>설치 안내는 저장소 <code>tools/USAGE-SETUP.md</code> 에 있습니다.</div>';
       return;
     }
     var ageMin = Math.round((Date.now() - Date.parse(snap.created_at)) / 60000);

@@ -1,4 +1,4 @@
-﻿# 무림AI방 — AI 사용량 보고 스크립트 (지존 PC에서 15분마다 실행)
+﻿# 무림AI방 — AI 사용량 보고 스크립트 (지존 PC에서 30분마다 실행, 간격은 usage-setup.ps1 -Minutes)
 # Win-CodexBar 의 codexbar-cli 로 Claude·Codex·Gemini·Antigravity 등의 사용량을 읽어
 # 무림AI방 /api/usage 로 올린다. 무림AI방 상단 '📊 사용량' 에서 PC·폰 어디서든 본다.
 # 키는 usage-setup.ps1 이 이 PC 사용자 계정으로만 풀리게(DPAPI) 암호화해 둔 파일에서 읽는다.
@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 $Base   = 'https://ai-team-room-120.pages.dev'
 $Dir    = Split-Path -Parent $MyInvocation.MyCommand.Path
 $KeyFile = Join-Path $Dir 'usage-push.key'
+$CliCache = Join-Path $Dir 'usage-push.cli'
 $LogFile = Join-Path $Dir 'usage-push.log'
 
 function Write-Log($msg) {
@@ -28,6 +29,17 @@ function Get-RoomKey {
 }
 
 function Find-Cli {
+  # 한 번 찾은 위치는 기억해 두고 다음부터 바로 쓴다(매번 Program Files 를 뒤지지 않게)
+  if (Test-Path $CliCache) {
+    $cached = (Get-Content -Path $CliCache -Raw -Encoding UTF8).Trim([char]0xFEFF, ' ', "`r", "`n")
+    if ($cached -and (Test-Path $cached)) { return $cached }
+  }
+  $found = Find-CliUncached
+  Set-Content -Path $CliCache -Value $found -Encoding UTF8
+  return $found
+}
+
+function Find-CliUncached {
   $cmd = Get-Command codexbar-cli -ErrorAction SilentlyContinue
   if ($cmd) { return $cmd.Source }
   $cands = @(
@@ -44,6 +56,8 @@ function Find-Cli {
 
 try {
   [Console]::OutputEncoding = [Text.Encoding]::UTF8
+  # 오래된 Windows 의 PowerShell 5.1 은 TLS 1.2 를 기본으로 안 쓰는 경우가 있어 명시한다(Cloudflare 는 1.2 이상만 받음)
+  [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
   $key = Get-RoomKey
   $cli = Find-Cli
 
