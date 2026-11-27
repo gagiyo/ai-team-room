@@ -47,12 +47,20 @@ try {
   $key = Get-RoomKey
   $cli = Find-Cli
 
-  $text = (& $cli usage -p all 2>&1 | Out-String).Trim()
+  # codexbar-cli 는 안 쓰는 서비스(Codex 등)에 대해 경고(WARN)를 stderr 로 낸다.
+  # Windows PowerShell 5.1 은 Stop 모드에서 그걸 오류로 보고 멈추므로, 이 구간만 Continue 로 두고 stdout 만 쓴다.
+  $ErrorActionPreference = 'Continue'
+  $text = (& $cli usage -p all 2>$null | Out-String)
   $json = $null
   try {
     $raw = (& $cli usage -p all --json 2>$null | Out-String).Trim()
-    if ($raw) { $json = $raw | ConvertFrom-Json }
+    if ($raw -and ($raw.StartsWith('{') -or $raw.StartsWith('['))) { $json = $raw | ConvertFrom-Json }
   } catch { $json = $null }
+  $ErrorActionPreference = 'Stop'
+  # 혹시 섞여 들어온 로그 줄(2026-..T.. WARN/INFO ...)은 걷어 낸다
+  $text = (($text -split "`r?`n") | Where-Object { $_ -notmatch '^\s*\d{4}-\d\d-\d\dT\S+\s+(WARN|INFO|DEBUG|TRACE|ERROR)\b' }) -join "`n"
+  $text = $text.Trim()
+  if (-not $text -and -not $json) { throw "codexbar-cli 가 아무 값도 주지 않았습니다. 트레이 앱에서 Claude 연결 상태를 확인하세요." }
 
   $body = @{ text = $text; json = $json; host = $env:COMPUTERNAME; tool = 'codexbar-cli' } | ConvertTo-Json -Depth 12 -Compress
   $bytes = [Text.Encoding]::UTF8.GetBytes($body)
