@@ -60,7 +60,7 @@ globalThis.crypto = {
 // ---- 메모리 D1 ----
 function makeEnv(){
   var db = {
-    messages: [], nextId: 1, tokens: [], nextTokenId: 1, limits: {}, cols: {}, rooms: [
+    messages: [], nextId: 1, tokens: [], nextTokenId: 1, limits: {}, cols: {}, meta: {}, indexes: [], rooms: [
       {slug:'general', name:'종합 회의실', description:'모두 함께', position:1},
       {slug:'insurance', name:'보험·마케팅', description:'보험', position:2}
     ]
@@ -114,6 +114,11 @@ function makeEnv(){
         else if (/^(?:m\.)?hold_notified_at is not null$/.test(pr)) rows = rows.filter(function(r){ return !!r.hold_notified_at; });
         /* 승인된 안건은 보관 정리에서 뺀다 — (approved_at is null or agenda is null or agenda <> 1) */
         else if (/^\(.*approved_at is null or .*agenda is null or .*agenda <> 1.*\)$/.test(pr)) rows = rows.filter(function(r){ return !r.approved_at || r.agenda == null || Number(r.agenda) !== 1; });
+        /* 2026-11-27 보관 정리: 안건은 수명 주기 몫 → 승인·미결 안건은 정리 제외, '삭제'로 끝난 안건만 5일 뒤 정리 */
+        else if (/^\(coalesce\(agenda, 0\) <> 1 or discarded_at is not null\)$/.test(pr))
+          rows = rows.filter(function(r){ return (r.agenda == null || Number(r.agenda) !== 1) || !!r.discarded_at; });
+        else if (/^coalesce\(agenda, 0\) <> 1$/.test(pr))
+          rows = rows.filter(function(r){ return r.agenda == null || Number(r.agenda) !== 1; });
         /* 안건 요약 — (m.agenda = 1 or approved_at is not null or rejected_at is not null or held_at is not null) */
         else if (/^\(.*agenda = 1 or .*\)$/.test(pr)) rows = rows.filter(function(r){ return Number(r.agenda) === 1 || !!r.approved_at || !!r.rejected_at || !!r.held_at; });
         else if (/^1 = 1$/.test(pr)) { /* 항상 참 */ }
@@ -139,6 +144,13 @@ function makeEnv(){
       first: function(){
         var s = norm(sql);
         if (s.indexOf('select 1 as ok') === 0) return Promise.resolve({ok:1});
+        if (s.indexOf('select v from app_meta') === 0)
+          return Promise.resolve(db.meta && db.meta[params[0]] !== undefined ? {v: db.meta[params[0]]} : null);
+        if (s.indexOf('select max(id) as max_id from messages') === 0) {
+          var mx = 0;
+          db.messages.forEach(function(m){ if (m.room_slug === params[0] && Number(m.id) > mx) mx = Number(m.id); });
+          return Promise.resolve({max_id: mx});
+        }
         if (s.indexOf('select slug, name, description from rooms where slug = ?') === 0)
           return Promise.resolve(db.rooms.filter(function(r){return r.slug===params[0];})[0] || null);
         if (s.indexOf('select id, agent, label from agent_tokens') === 0)
@@ -156,11 +168,34 @@ function makeEnv(){
         if (s.indexOf('select sender,') === 0 && s.indexOf('group by sender') !== -1) {
           var agg = {};
           db.messages.forEach(function(m){
-            var a = agg[m.sender] || (agg[m.sender] = {sender:m.sender, n:0, last_at:m.created_at, last_room:m.room_slug});
-            a.n++; if (m.created_at > a.last_at){ a.last_at = m.created_at; a.last_room = m.room_slug; }
+            var a = agg[m.sender] || (agg[m.sender] = {sender:m.sender, n:0, last_at:m.created_at, last_id:m.id});
+            a.n++;
+            if (!a.last_at || String(m.created_at) > String(a.last_at)) a.last_at = m.created_at;
+            if (Number(m.id) > Number(a.last_id)) a.last_id = m.id;
           });
           return Promise.resolve({results: Object.keys(agg).map(function(k){return agg[k];})});
         }
+        /* 2026-11-27 loadRooms: 방별 집계 한 번 */
+        if (s.indexOf('select room_slug as slug') === 0 && s.indexOf('group by room_slug') !== -1) {
+          var byRoom = {};
+          db.messages.forEach(function(m){
+            var a = byRoom[m.room_slug] || (byRoom[m.room_slug] = {slug:m.room_slug, message_count:0, last_id:null, last_message_at:null, approved_count:0, rejected_count:0, held_count:0, last_approved_at:null});
+            a.message_count++;
+            if (a.last_id === null || Number(m.id) > Number(a.last_id)) a.last_id = m.id;
+            if (!a.last_message_at || String(m.created_at) > String(a.last_message_at)) a.last_message_at = m.created_at;
+            if (m.approved_at) {
+              a.approved_count++;
+              if (!a.last_approved_at || String(m.approved_at) > String(a.last_approved_at)) a.last_approved_at = m.approved_at;
+            }
+            if (Number(m.agenda) === 1 && !m.approved_at && !m.held_at) a.rejected_count++;
+            if (Number(m.agenda) === 1 && m.held_at && !m.approved_at) a.held_count++;
+          });
+          return Promise.resolve({results: Object.keys(byRoom).map(function(k){ return byRoom[k]; })});
+        }
+        if (s.indexOf('select slug, name, description, position from rooms') === 0)
+          return Promise.resolve({results: db.rooms.slice().sort(function(a,b){ return (a.position||0)-(b.position||0); }).map(function(r){ return {slug:r.slug, name:r.name, description:r.description, position:r.position}; })});
+        if (s.indexOf('select slug from rooms') === 0)
+          return Promise.resolve({results: db.rooms.map(function(r){ return {slug:r.slug}; })});
         if (s.indexOf('from rooms r') !== -1)
           return Promise.resolve({results: db.rooms.map(function(r){ return {slug:r.slug, name:r.name, description:r.description, position:r.position, message_count: db.messages.filter(function(m){return m.room_slug===r.slug;}).length, last_id: 0, last_message_at: null}; })});
         if (s.indexOf('from messages') !== -1)
@@ -172,6 +207,16 @@ function makeEnv(){
       run: function(){
         var s = norm(sql);
         if (s.indexOf('create table') === 0) return Promise.resolve({meta:{}});
+        if (s.indexOf('create index') === 0) {
+          var im = s.match(/index if not exists (\w+)/) || s.match(/index (\w+)/);
+          if (im && db.indexes.indexOf(im[1]) === -1) db.indexes.push(im[1]);
+          return Promise.resolve({meta:{}});
+        }
+        if (s.indexOf('insert into app_meta') === 0) {
+          db.meta = db.meta || {};
+          db.meta[params[0]] = (db.meta[params[0]] || 0) + 1;
+          return Promise.resolve({meta:{}});
+        }
         if (s.indexOf('alter table messages add column') === 0) {
           var cm = s.match(/add column (\w+)/);
           var col = cm ? cm[1] : '?';
@@ -469,7 +514,7 @@ TESTS = r"""
   /* ---------- 2026-11-26: 보관 표시(고정·잡담) ---------- */
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer ' + selboyToken}, body:{content:'평범한 보고'}}), env);
   var plain = JSON.parse(r.body).message;
-  ok('default retention', plain.pinned === false && plain.retention === 'normal' && plain.retention_days === 90 && !!plain.expires_at,
+  ok('default retention', plain.pinned === false && plain.retention === 'normal' && plain.retention_days === 5 && !!plain.expires_at,
      JSON.stringify({p:plain.pinned, r:plain.retention, d:plain.retention_days}));
 
   // 고정은 누구나(보호 방향) — 남의 글도 가능
@@ -486,12 +531,12 @@ TESTS = r"""
   ok('casual other 403', r.status === 403, r.status);
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + plain.id, {method:'PATCH', headers:{authorization:'Bearer ' + selboyToken}, body:{retention:'casual'}}), env);
   var casualMsg = JSON.parse(r.body).message;
-  ok('owner casual', r.status===200 && casualMsg.retention === 'casual' && casualMsg.retention_days === 10, r.status + ' ' + r.body.slice(0,160));
+  ok('owner casual', r.status===200 && casualMsg.retention === 'casual' && casualMsg.retention_days === 5, r.status + ' ' + r.body.slice(0,160));
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + plain.id, {method:'PATCH', headers:{'x-room-key':'room-pass'}, body:{retention:'normal'}}), env);
   ok('human sets normal', r.status===200 && JSON.parse(r.body).message.retention === 'normal', r.status);
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer ' + selboyToken}, body:{content:'테스트 사진', retention:'chat'}}), env);
   var casualNew = JSON.parse(r.body).message;
-  ok('post as casual', r.status===201 && casualNew.retention === 'casual' && casualNew.retention_days === 10, r.body.slice(0,160));
+  ok('post as casual', r.status===201 && casualNew.retention === 'casual' && casualNew.retention_days === 5, r.body.slice(0,160));
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/999999', {method:'PATCH', headers:{authorization:'Bearer ' + selboyToken}, body:{pinned:true}}), env);
   ok('flag missing 404', r.status === 404, r.status);
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/' + plain.id, {method:'PATCH', headers:{authorization:'Bearer ' + selboyToken}, body:{}}), env);
@@ -516,9 +561,9 @@ TESTS = r"""
   rawCasual.retention_kind = 'casual';
   var rawPinned = addAged(95, '석 달 전 중요 결정', {pinned:true});
   var rawCasualOld = addAged(95, '오래된 잡담', {retention:'casual'});
-  var rawRecent = addAged(5, '최근 정상 글');
+  var rawRecent = addAged(3, '최근 정상 글');
 
-  r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/cleanup', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/cleanup?keep_recent=0', {headers:{authorization:'Bearer legacy-shared-key'}}), env);
   var dry = JSON.parse(r.body);
   ok('cleanup dry-run', r.status===200 && dry.dry_run === true && dry.targets.total === 3 && dry.targets.casual === 2 && dry.targets.normal === 1,
      r.status + ' ' + JSON.stringify({total:dry.targets && dry.targets.total, c:dry.targets && dry.targets.casual, n:dry.targets && dry.targets.normal}));
@@ -529,7 +574,7 @@ TESTS = r"""
   r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/cleanup', {headers:{authorization:'Bearer ' + pallyToken}}), env);
   ok('cleanup agent 403', r.status === 403, r.status);
 
-  r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/cleanup', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{dry_run:false}}), env);
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/cleanup', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{dry_run:false, keep_recent:0}}), env);
   var ran = JSON.parse(r.body);
   ok('cleanup hides', r.status===200 && ran.hidden === 3 && ran.purged.count === 0, r.status + ' ' + r.body.slice(0,200));
 
@@ -563,14 +608,14 @@ TESTS = r"""
   oldParent.hidden_at = new Date(Date.now() - 40*86400000).toISOString();
   db.messages.push({id: db.nextId++, room_slug:'general', sender:'연금술사', content:'그 오래된 글에 단 답글', reply_to_id: oldParent.id, attachment_id:null, created_at:new Date().toISOString(), pinned:0, retention_kind:'normal', hidden_at:null, deleted_at:null});
 
-  r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/cleanup', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{purge:true}}), env);
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/cleanup', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{purge:true, keep_recent:0}}), env);
   var purged = JSON.parse(r.body);
   var oldLeft = db.messages.filter(function(m){ return m.id === oldHidden.id; }).length;
   var parentRow = db.messages.filter(function(m){ return m.id === oldParent.id; })[0];
   ok('purge deletes', purged.purged.count === 2 && purged.purged.deleted === 1 && purged.purged.placeholder === 1 && oldLeft === 0, JSON.stringify(purged.purged));
   ok('purge keeps quote placeholder', !!parentRow && parentRow.content === '삭제된 메시지입니다.' && !!parentRow.deleted_at, parentRow ? parentRow.content : 'missing');
 
-  r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/cleanup', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{purge:false}}), env);
+  r = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/cleanup', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{purge:false, keep_recent:0}}), env);
   ok('cleanup purge=0 skips', JSON.parse(r.body).purged.count === 0, r.body.slice(0,140));
 
   /* ---------- 2026-11-26: 아카이브 내보내기 ---------- */
@@ -736,7 +781,7 @@ TESTS = r"""
   ok('agenda: legacy db web post ok', oldPost2.status === 201 && oldMsg2.agenda === true && oldMsg2.decision === 'rejected' && oldMsg2.days_left === 7, oldPost2.status + ' ' + JSON.stringify({a: oldMsg2.agenda, d: oldMsg2.decision}));
   var oldList = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages', {headers:{authorization:'Bearer legacy-shared-key'}}), envOld);
   ok('agenda: legacy db list ok', oldList.status === 200 && JSON.parse(oldList.body).messages.length === 1, oldList.status);
-  var oldClean = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/cleanup', {headers:{authorization:'Bearer legacy-shared-key'}}), envOld);
+  var oldClean = await __handler.fetch(makeReq('https://x.pages.dev/api/admin/cleanup?keep_recent=0', {headers:{authorization:'Bearer legacy-shared-key'}}), envOld);
   var oldCleanJson = JSON.parse(oldClean.body);
   ok('agenda: legacy db cleanup ok', oldClean.status === 200 && oldCleanJson.agenda && oldCleanJson.agenda.to_delete.count === 0, oldClean.status + ' ' + oldClean.body.slice(0,160));
   var oldDecide = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms/general/messages/1/decision', {method:'POST', headers:{'x-room-key':'room-pass'}, body:{decision:'approved'}}), envOld);
@@ -770,10 +815,10 @@ TESTS = r"""
   var lcHeldAlarm = put3(104, 31, '[안건] 보류 31일 — 알람 차례', {agenda:1, held_at: isoAgo(31), held_by:'지존'});
   var lcHeldExpired = put3(105, 40, '[안건] 보류 알람 뒤 9일 — 삭제 차례', {agenda:1, held_at: isoAgo(40), held_by:'지존', hold_notified_at: isoAgo(9)});
   var lcApproved = put3(106, 100, '[안건] 오래전 승인된 안건', {agenda:1, approved_at: isoAgo(95), approved_by:'지존'});
-  var lcAutoOld = put3(107, 20, '[안건] 예전 자동 인식 글(열 없던 시절)', {agenda: null});
+  var lcAutoOld = put3(107, 3, '[안건] 예전 자동 인식 글(열 없던 시절)', {agenda: null});
   var lcPlainOld = put3(108, 95, '그냥 오래된 일반 글');
 
-  var lcPrev = await call3('/api/admin/cleanup', {headers:{authorization:'Bearer legacy-shared-key'}});
+  var lcPrev = await call3('/api/admin/cleanup?keep_recent=0', {headers:{authorization:'Bearer legacy-shared-key'}});
   var lcPrevJson = JSON.parse(lcPrev.body);
   var prevIds = lcPrevJson.agenda.to_delete.preview.map(function(x){ return x.id; }).sort(function(a,b){ return a-b; });
   ok('agenda: cleanup preview is dry-run', lcPrev.status === 200 && lcPrevJson.dry_run === true, lcPrev.status + ' ' + lcPrev.body.slice(0,120));
@@ -786,7 +831,7 @@ TESTS = r"""
   var lcAgent = await call3('/api/admin/cleanup', {headers:{authorization:'Bearer ' + lcAllyTok}});
   ok('agenda: cleanup agent 403', lcAgent.status === 403, lcAgent.status);
 
-  var lcRun = await call3('/api/admin/cleanup', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{purge:true}});
+  var lcRun = await call3('/api/admin/cleanup', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{purge:true, keep_recent:0}});
   var lcRunJson = JSON.parse(lcRun.body);
   var left = db3.messages.map(function(m){ return m.id; });
   ok('agenda: cleanup alarmed held', lcRunJson.agenda.alarmed === 1 && !!db3.messages.filter(function(m){ return m.id === 104; })[0].hold_notified_at, JSON.stringify({alarmed: lcRunJson.agenda.alarmed}));
@@ -796,17 +841,139 @@ TESTS = r"""
   ok('agenda: auto-detected old kept', left.indexOf(107) !== -1 && !db3.messages.filter(function(m){ return m.id === 107; })[0].hidden_at, 'auto old kept');
   ok('agenda: plain old still hidden', !!db3.messages.filter(function(m){ return m.id === 108; })[0].hidden_at, 'plain hidden');
 
-  var lcAgain = await call3('/api/admin/cleanup', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{purge:true}});
+  var lcAgain = await call3('/api/admin/cleanup', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{purge:true, keep_recent:0}});
   ok('agenda: cleanup idempotent', JSON.parse(lcAgain.body).agenda.deleted.count === 0 && JSON.parse(lcAgain.body).agenda.alarmed === 0, lcAgain.body.slice(0,120));
 
   // 알람 뒤 7일이 지난 보류 건은 다음 정리에서 지워진다
   var heldRow = db3.messages.filter(function(m){ return m.id === 104; })[0];
   heldRow.hold_notified_at = isoAgo(8);
-  var lcAfter = await call3('/api/admin/cleanup', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{purge:true}});
+  var lcAfter = await call3('/api/admin/cleanup', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{purge:true, keep_recent:0}});
   ok('agenda: held deleted after alarm+7', JSON.parse(lcAfter.body).agenda.deleted.count === 1 && db3.messages.map(function(m){ return m.id; }).indexOf(104) === -1, lcAfter.body.slice(0,140));
 
   var lcOff = await call3('/api/admin/cleanup?agenda_lifecycle=false', {headers:{authorization:'Bearer legacy-shared-key'}});
   ok('agenda: lifecycle can be off', JSON.parse(lcOff.body).agenda.to_delete.count === 0, lcOff.body.slice(0,140));
+
+  /* ================= 2026-11-27 추가: 보관 5일·최근 200개 · 읽기 최적화(버전·ETag·304) ================= */
+
+  // A) 보관 정책 — normal·casual 5일, 고정·승인 안건·미결 안건은 유지, '삭제'로 끝난 안건은 5일 뒤 정리
+  var env5 = makeEnv();
+  var db5 = env5.DB._raw;
+  function put5(id, daysAgo, content, extra){
+    var row = {id: id, room_slug: (extra && extra.room) || 'general', sender: '외문집사', content: content,
+      reply_to_id: null, attachment_id: null, created_at: isoAgo(daysAgo), pinned: 0, retention_kind: 'normal',
+      hidden_at: null, deleted_at: null, agenda: null, approved_at: null, approved_by: null, rejected_at: null,
+      rejected_by: null, held_at: null, held_by: null, hold_notified_at: null, discarded_at: null};
+    for (var k in (extra || {})) row[k] = extra[k];
+    db5.messages.push(row);
+    db5.nextId = Math.max(db5.nextId, id + 1);
+    return row;
+  }
+  function call5(path, opts){ return __handler.fetch(makeReq('https://x.pages.dev' + path, opts), env5); }
+  put5(201, 6, '6일 지난 일반 글');
+  put5(202, 4, '4일 지난 일반 글');
+  put5(203, 30, '30일 지난 고정 글', {pinned: 1});
+  put5(204, 30, '[안건] 승인된 안건', {agenda: 1, approved_at: isoAgo(25), approved_by: '지존'});
+  put5(205, 30, '[안건] 미결 안건', {agenda: 1, rejected_at: isoAgo(3), rejected_by: '지존'});
+  put5(206, 30, '[안건] 삭제로 끝난 안건', {agenda: 1, discarded_at: isoAgo(2), discarded_by: '지존'});
+  put5(207, 30, '30일 지난 잡담', {retention_kind: 'casual'});
+
+  var p5 = JSON.parse((await call5('/api/admin/cleanup?keep_recent=0', {headers:{authorization:'Bearer legacy-shared-key'}})).body);
+  var ids5 = p5.targets.preview.map(function(x){ return x.id; }).sort(function(a,b){ return a-b; });
+  ok('retention: 5일 기본값', p5.policy.normal_days === 5 && p5.policy.casual_days === 5 && p5.policy.grace_days === 30,
+    JSON.stringify(p5.policy));
+  ok('retention: 5일 지난 글만 대상', ids5.join(',') === '201,206,207', ids5.join(','));
+  ok('retention: 고정·승인·미결 안건은 유지', [203,204,205].every(function(id){ return ids5.indexOf(id) === -1; }), ids5.join(','));
+  ok('retention: 4일 지난 글은 유지', ids5.indexOf(202) === -1, ids5.join(','));
+
+  var p5b = JSON.parse((await call5('/api/admin/cleanup', {headers:{authorization:'Bearer legacy-shared-key'}})).body);
+  ok('retention: keep_recent 기본 200', p5b.policy.keep_recent === 200, JSON.stringify(p5b.policy));
+  ok('retention: keep_recent 200이면 최근 글은 나이와 무관하게 유지', p5b.targets.total === 0, JSON.stringify({t: p5b.targets.total}));
+
+  // keep_recent=2 — 한 방의 최근 2개만 남는다
+  var env6 = makeEnv();
+  var db6 = env6.DB._raw;
+  for (var k6 = 1; k6 <= 6; k6++){
+    db6.messages.push({id: 300 + k6, room_slug: 'general', sender: '외문집사', content: '30일 지난 글 ' + k6,
+      reply_to_id: null, attachment_id: null, created_at: isoAgo(30), pinned: 0, retention_kind: 'normal',
+      hidden_at: null, deleted_at: null, agenda: null, approved_at: null, rejected_at: null, held_at: null, discarded_at: null});
+  }
+  db6.nextId = 320;
+  var p6 = JSON.parse((await __handler.fetch(makeReq('https://x.pages.dev/api/admin/cleanup?keep_recent=2', {headers:{authorization:'Bearer legacy-shared-key'}}), env6)).body);
+  var ids6 = p6.targets.preview.map(function(x){ return x.id; }).sort(function(a,b){ return a-b; });
+  ok('keep_recent: 방마다 최근 2개 유지', ids6.join(',') === '301,302,303,304', ids6.join(','));
+
+  // B) 읽기 최적화 — 상태 버전·ETag/304·after= 빠른 응답·members 상관 서브쿼리 제거
+  var env7 = makeEnv();
+  var db7 = env7.DB._raw;
+  function call7(path, opts){ return __handler.fetch(makeReq('https://x.pages.dev' + path, opts), env7); }
+  var tok7 = JSON.parse((await call7('/api/admin/tokens', {method:'POST', headers:{authorization:'Bearer legacy-shared-key'}, body:{agents:['연금술사']}})).body).tokens[0].token;
+
+  var room7 = await call7('/api/rooms', {headers:{authorization:'Bearer legacy-shared-key'}});
+  var rooms7 = JSON.parse(room7.body);
+  ok('opt: rooms 200 + etag', room7.status === 200 && !!room7.headers.etag && rooms7.rooms.length === 2, JSON.stringify({s:room7.status, e:room7.headers.etag}));
+  ok('opt: 방별 집계(GROUP BY)', rooms7.rooms[0].message_count === 0 && rooms7.rooms[0].rejected_count === 0 && rooms7.rooms[0].last_id === null,
+    JSON.stringify(rooms7.rooms[0]));
+
+  var etag7 = room7.headers.etag;
+  var again7 = await call7('/api/rooms', {headers:{authorization:'Bearer legacy-shared-key', 'if-none-match': etag7}});
+  ok('opt: If-None-Match → 304', again7.status === 304 && again7.body === null, JSON.stringify({s:again7.status, b:String(again7.body).slice(0,40)}));
+  var star7 = await call7('/api/rooms', {headers:{authorization:'Bearer legacy-shared-key', 'if-none-match': '*'}});
+  ok('opt: If-None-Match * → 304', star7.status === 304, star7.status);
+
+  var ver7a = db7.meta.state_version || 0;
+  var post7 = await call7('/api/rooms/general/messages', {method:'POST', headers:{authorization:'Bearer ' + tok7}, body:{content:'버전 테스트 글', agenda:true}});
+  var msg7 = JSON.parse(post7.body).message;
+  ok('opt: 글을 쓰면 상태 버전 +1', (db7.meta.state_version || 0) === ver7a + 1, JSON.stringify({before: ver7a, after: db7.meta.state_version}));
+
+  var afterPost7 = await call7('/api/rooms', {headers:{authorization:'Bearer legacy-shared-key', 'if-none-match': etag7}});
+  var rooms7b = JSON.parse(afterPost7.body);
+  ok('opt: 버전이 바뀌면 304 아님 + 캐시 갱신', afterPost7.status === 200 && rooms7b.rooms[0].message_count === 1 && rooms7b.rooms[0].rejected_count === 1 && rooms7b.rooms[0].last_id === msg7.id,
+    JSON.stringify({s: afterPost7.status, r: rooms7b.rooms && rooms7b.rooms[0]}));
+
+  // 인덱스 — 첫 요청에서 만들어 달라고 했는지
+  ok('opt: 인덱스 세 개 요청', ['idx_messages_room','idx_messages_sender_id','idx_messages_room_agenda'].every(function(n){ return db7.indexes.indexOf(n) !== -1; }), JSON.stringify(db7.indexes));
+
+  // after= — 새 글이 없으면 빈 목록(unchanged), 있으면 새 글
+  var poll7 = JSON.parse((await call7('/api/rooms/general/messages?after=' + msg7.id + '&limit=50', {headers:{authorization:'Bearer legacy-shared-key'}})).body);
+  ok('opt: after 새 글 없음 → 빈 목록', poll7.ok === true && poll7.messages.length === 0 && poll7.unchanged === true, JSON.stringify(poll7));
+  var poll7b = JSON.parse((await call7('/api/rooms/general/messages?after=' + (msg7.id - 1) + '&limit=50', {headers:{authorization:'Bearer legacy-shared-key'}})).body);
+  ok('opt: after 새 글 있음 → 그 글', poll7b.messages.length === 1 && poll7b.messages[0].id === msg7.id && !poll7b.unchanged, JSON.stringify({n: poll7b.messages.length}));
+  var poll7c = JSON.parse((await call7('/api/rooms/general/messages?after=99999&limit=50', {headers:{authorization:'Bearer legacy-shared-key'}})).body);
+  ok('opt: after 미래 id → 빈 목록', poll7c.messages.length === 0 && poll7c.unchanged === true, JSON.stringify(poll7c));
+
+  // 최근 글 목록도 ETag/304 (타임라인 폴링)
+  var list7 = await call7('/api/rooms/general/messages?limit=50', {headers:{authorization:'Bearer legacy-shared-key'}});
+  ok('opt: 목록 etag', list7.status === 200 && !!list7.headers.etag, list7.status);
+  var list7b = await call7('/api/rooms/general/messages?limit=50', {headers:{authorization:'Bearer legacy-shared-key', 'if-none-match': list7.headers.etag}});
+  ok('opt: 목록 304', list7b.status === 304, list7b.status);
+
+  // members — ETag + 마지막 활동 방(last_room)이 그대로 채워지는지
+  await call7('/api/rooms/insurance/messages', {method:'POST', headers:{authorization:'Bearer ' + tok7}, body:{content:'보험 방 글'}});
+  var mem7 = await call7('/api/agents', {headers:{authorization:'Bearer legacy-shared-key'}});
+  var memJ7 = JSON.parse(mem7.body);
+  var pally7 = memJ7.agents.filter(function(a){ return a.name === '연금술사'; })[0];
+  ok('opt: members etag + last_room', !!mem7.headers.etag && pally7.last_room === 'insurance' && pally7.message_count === 2, JSON.stringify(pally7));
+  var mem7b = await call7('/api/agents', {headers:{authorization:'Bearer legacy-shared-key', 'if-none-match': mem7.headers.etag}});
+  ok('opt: members 304', mem7b.status === 304, mem7b.status);
+
+  // 안건 목록 — ETag + 결정을 바꾸면 캐시가 무효화된다
+  var ag7 = await call7('/api/agendas?decision=all&limit=200', {headers:{authorization:'Bearer legacy-shared-key'}});
+  var ag7j = JSON.parse(ag7.body);
+  ok('opt: agendas etag + 건수', !!ag7.headers.etag && ag7j.counts.rejected === 1, JSON.stringify({e: ag7.headers.etag, c: ag7j.counts}));
+  await call7('/api/rooms/general/messages/' + msg7.id + '/decision', {method:'POST', headers:{'x-room-key':'room-pass'}, body:{decision:'approved'}});
+  var ag7b = await call7('/api/agendas?decision=all&limit=200', {headers:{authorization:'Bearer legacy-shared-key', 'if-none-match': ag7.headers.etag}});
+  var ag7bj = JSON.parse(ag7b.body);
+  ok('opt: 결정 후 안건 캐시 갱신', ag7b.status === 200 && ag7bj.counts.approved === 1 && ag7bj.counts.rejected === 0, JSON.stringify({s: ag7b.status, c: ag7bj.counts}));
+
+  // 앱 메타 테이블을 못 만드는 예전 환경에서도 그대로 동작(버전 null → 캐시 없이 계산)
+  var env8 = makeEnv();
+  var origPrepare8 = env8.DB.prepare;
+  env8.DB.prepare = function(sql){
+    if (String(sql).indexOf('app_meta') !== -1) throw new Error('no such table: app_meta');
+    return origPrepare8(sql);
+  };
+  var noMeta8 = await __handler.fetch(makeReq('https://x.pages.dev/api/rooms', {headers:{authorization:'Bearer legacy-shared-key'}}), env8);
+  ok('opt: app_meta 없어도 동작', noMeta8.status === 200 && JSON.parse(noMeta8.body).rooms.length === 2 && !noMeta8.headers.etag, noMeta8.status);
 
   globalThis.__out = out;
 })().catch(function(e){ globalThis.__out = [{name:'EXCEPTION', ok:false, extra:String((e && e.stack) || e)}]; });

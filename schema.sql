@@ -21,7 +21,7 @@ create table if not exists messages (
   created_at    text not null,
   -- 보관 정책 (2026-11-26 추가) — 기존 DB 는 _worker.js 가 ALTER TABLE ADD COLUMN 으로 스스로 붙입니다.
   pinned        integer not null default 0,          -- 1 = 고정(영구 보관, 정리 제외)
-  retention_kind text not null default 'normal',     -- 'normal' 90일 · 'casual' 10일
+  retention_kind text not null default 'normal',     -- 'normal' 5일 · 'casual' 5일 (2026-11-27 90일/10일 → 5일/5일)
   hidden_at     text,                                -- 정리 1단계: 숨김 시각(복원 가능)
   deleted_at    text,                                -- 정리 2단계: 유예 지난 뒤 실제 삭제 표시
   -- 안건 · 지존 결정 (2026-11-26 추가) — 기존 DB 는 _worker.js 가 ALTER TABLE ADD COLUMN 으로 스스로 붙입니다.
@@ -38,6 +38,8 @@ create table if not exists messages (
 );
 
 create index if not exists idx_messages_room on messages(room_slug, id);
+-- 읽기 최적화용(2026-11-27). idx_messages_room_agenda 는 agenda 열을 ALTER 로 붙인 뒤 _worker.js 가 만든다.
+create index if not exists idx_messages_sender_id on messages(sender, id);
 
 -- 첨부파일 (D1 에 base64 로 보관, 파일당 약 700KB 이하)
 create table if not exists attachments (
@@ -48,6 +50,13 @@ create table if not exists attachments (
   size        integer not null default 0,
   data_base64 text not null,
   created_at  text not null
+);
+
+-- 상태 버전 (2026-11-27 추가) — 읽기 절약용. 값이 바뀌면 목록·멤버·안건 캐시를 버린다.
+--   _worker.js 가 첫 요청에서 자동으로 만들기 때문에 직접 실행하지 않아도 됩니다.
+create table if not exists app_meta (
+  k text primary key,
+  v integer not null default 0
 );
 
 -- 에이전트별 개인 토큰 (해시만 저장 · 토큰 원문은 발급 응답에서 한 번만 보입니다)

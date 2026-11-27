@@ -322,7 +322,7 @@
   .ainfo{font-weight:400;font-size:11.5px;letter-spacing:0;color:var(--muted);white-space:nowrap}
   .badge{font-size:10.5px;padding:1px 6px;border-radius:6px;border:1px solid #414b5d;color:var(--muted);background:#2b3240}
   .badge.legacy{border-style:dashed;opacity:.75}
-  /* 보관 표시 — 고정(영구) · 잡담(10일) */
+  /* 보관 표시 — 고정(영구) · 잡담(5일) */
   .badge.pin{color:#ffd166;border-color:#6b5a2a;background:#3d3318}
   .badge.casual{color:#ffb3a7;border-color:#6b3a33;background:#3a2a27}
   /* 안건 · 지존 결정 */
@@ -737,7 +737,15 @@
     return '<span class="who"' + (color ? ' style="color:' + esc(color) + '"' : '') + '>' + esc(name || '') +
       (info ? ' <span class="ainfo">(' + esc(info) + ')</span>' : '') + '</span>';
   }
-  var POLL_MS = 4000;
+  /* 폴링 주기 — D1 읽기를 아끼려고 화면을 볼 때만 촘촘히 본다(2026-11-27 최적화).
+     · POLL_MS: 화면을 볼 때 새 글 확인
+     · POLL_HIDDEN_MS: 탭이 가려져 있으면 이 간격으로만 확인(브라우저는 백그라운드 타이머를 더 늦춤)
+     · VIEW_MS / MEMBERS_MS: 방 목록·안건·타임라인 / AI 연결 상태
+     응답에는 ETag 가 붙어서, 바뀐 게 없으면 304 로 본문 없이 돌아온다 */
+  var POLL_MS = 5000;
+  var POLL_HIDDEN_MS = 60000;
+  var VIEW_MS = 30000;
+  var MEMBERS_MS = 60000;
   var state = {
     key: localStorage.getItem('ai_team_room_key') || '',
     sender: normalizeSender(localStorage.getItem('ai_team_room_sender') || SENDERS[0].name),
@@ -754,6 +762,10 @@
     readOnly: false,
     members: [],
     membersAt: 0,
+    /* ETag — 같은 경로·같은 조건의 응답이 그대로이면 서버가 304 로 답한다 */
+    etags: {},
+    /* 타임라인: 방별 최근 글(304 가 오면 이 값을 그대로 다시 쓴다) */
+    timelineByRoom: {},
     canApprove: false,
     agendas: [],
     agendaCounts: {approved:0, rejected:0, held:0, deleted:0},
@@ -874,10 +886,18 @@
   }
   function api(path, opts){
     opts = opts || {};
+    var method = opts.method || 'GET';
     var headers = Object.assign({'X-Room-Key': state.key}, opts.headers || {});
     if (opts.body) headers['Content-Type'] = 'application/json';
-    return fetch(path, {method: opts.method || 'GET', headers: headers, body: opts.body, cache:'no-store'})
+    if (method === 'GET' && opts.etag && state.etags[path]) headers['If-None-Match'] = state.etags[path];
+    return fetch(path, {method: method, headers: headers, body: opts.body, cache:'no-store'})
       .then(function(res){
+        // 304 — 바뀐 게 없다. 본문을 읽지 않고 그대로 넘어간다.
+        if (res.status === 304) return {ok:true, not_modified:true};
+        if (opts.etag){
+          var et = res.headers && res.headers.get ? res.headers.get('ETag') : null;
+          if (et) state.etags[path] = et; else delete state.etags[path];
+        }
         return res.json().catch(function(){ return {ok:false}; }).then(function(data){
           if (!res.ok || !data.ok) {
             var err = new Error(data && data.message ? data.message : ('HTTP ' + res.status));
@@ -1300,11 +1320,15 @@
     if (!rooms.length) return Promise.resolve();
     var jobs = rooms.map(function(r){
       var slug = r.slug;
-      return api('/api/rooms/' + encodeURIComponent(slug) + '/messages?limit=' + TL_PER_ROOM)
+      // ETag — 방의 최근 글이 그대로이면 304 가 오고, 방별로 받아 둔 목록을 그대로 쓴다(D1 읽기 0행).
+      return api('/api/rooms/' + encodeURIComponent(slug) + '/messages?limit=' + TL_PER_ROOM, {etag:true})
         .then(function(d){
-          return (d.messages || []).map(function(m){ m.room = slug; return m; });
+          if (d && d.not_modified && state.timelineByRoom[slug]) return state.timelineByRoom[slug];
+          var list = ((d && d.messages) || []).map(function(m){ m.room = slug; return m; });
+          state.timelineByRoom[slug] = list;
+          return list;
         })
-        .catch(function(){ return []; });
+        .catch(function(){ return state.timelineByRoom[slug] || []; });
     });
     // 제목 고침은 자주 바뀌지 않으니 1분에 한 번만 새로 받는다
     var needTitles = !state.topicTitlesAt || (Date.now() - state.topicTitlesAt > 60000);
@@ -1474,7 +1498,8 @@
   }
   function loadMembers(){
     state.membersAt = Date.now();
-    return api('/api/agents').then(function(d){
+    return api('/api/agents', {etag:true}).then(function(d){
+      if (d && d.not_modified) return;
       state.members = d.agents || [];
       renderMembers();
     }).catch(function(){});
@@ -1655,15 +1680,18 @@
     renderSectHints();
   }
   function loadRooms(){
-    return api('/api/rooms').then(function(d){
-      state.rooms = d.rooms || [];
-      renderRooms();
-      var cur = state.rooms.filter(function(r){ return r.slug === state.room; })[0];
+    return api('/api/rooms', {etag:true}).then(function(d){
+      if (!(d && d.not_modified)){ // 304 면 받아 둔 목록 그대로 쓴다
+        state.rooms = d.rooms || [];
+        renderRooms();
+        renderAgendas();
+      }
+      // 방 이름·설명은 방을 바꿀 때마다 지금 방 기준으로 다시 칠한다(304 여도 마찬가지)
+      var cur = (state.rooms || []).filter(function(r){ return r.slug === state.room; })[0];
       if (cur){
         $('roomName').textContent = cur.slug;
         $('roomDesc').textContent = cur.name + ' · ' + (cur.description || '');
       }
-      renderAgendas();
     });
   }
   function switchRoom(slug){
@@ -1716,7 +1744,7 @@
           (aiInfoIsRole(m.sender, m.role) ? '' : '<span class="badge">' + esc(m.role || '참여자') + '</span>') +
           '<span class="time">' + esc(kstTime(m.created_at)) + '</span>' +
           (m.pinned ? '<span class="badge pin" title="고정 — 기간과 무관하게 영구 보관">📌 영구보관</span>' : '') +
-          (m.retention === 'casual' && !m.pinned ? '<span class="badge casual" title="잡담 — 10일 뒤 정리">10일</span>' : '') +
+          (m.retention === 'casual' && !m.pinned ? '<span class="badge casual" title="잡담 — ' + (m.retention_days || 5) + '일 뒤 정리">' + (m.retention_days || 5) + '일</span>' : '') +
           (m.hidden ? '<span class="badge" title="정리로 숨겨진 글">숨김</span>' : '') +
           (m.agenda ? '<span class="badge agenda" title="안건 — 지존이 승인·미승인·보류를 정합니다">🏛 안건</span>' : '') +
           (m.agenda && m.decision === 'approved'
@@ -1777,7 +1805,7 @@
             (m.pinned ? '고정 해제 (보통 보관으로)' : '고정 — 기간과 무관하게 영구 보관') + '">' +
             (m.pinned ? '고정해제' : '📌 고정') + '</button>' +
           '<button type="button" class="actbtn' + (m.retention === 'casual' ? ' casual-on' : '') + '" data-casual="' + m.id + '" title="' +
-            (m.retention === 'casual' ? '보통(90일) 보관으로 되돌리기' : '잡담 — 10일 뒤 자동 정리') + '">' +
+            (m.retention === 'casual' ? '보통(' + (m.retention_days || 5) + '일) 보관으로 되돌리기' : '잡담 — ' + (m.retention_days || 5) + '일 뒤 자동 정리') + '">' +
             (m.retention === 'casual' ? '보통' : '잡담') + '</button>') +
       (canModify(m)
         ? '<button type="button" class="actbtn" data-edit="' + m.id + '">수정</button>' +
@@ -2009,17 +2037,17 @@
   function findMsg(id){
     return state.messages.filter(function(x){ return x.id === id; })[0];
   }
-  /* 보관 표시 토글 — 고정(영구 보관) / 잡담(10일). 서버 권한: 고정은 누구나, 해제·잡담은 쓴 사람 또는 지존 */
+  /* 보관 표시 토글 — 고정(영구 보관) / 잡담(5일). 서버 권한: 고정은 누구나, 해제·잡담은 쓴 사람 또는 지존 */
   function toggleFlag(id, kind){
     var m = findMsg(id);
     if (!m) return;
     var payload, done;
     if (kind === 'pinned'){
       payload = {pinned: !m.pinned};
-      done = payload.pinned ? '📌 고정했습니다 (영구 보관)' : '고정을 풀었습니다 (기본 90일)';
+      done = payload.pinned ? '📌 고정했습니다 (영구 보관)' : '고정을 풀었습니다 (기본 5일)';
     } else {
       payload = {retention: m.retention === 'casual' ? 'normal' : 'casual'};
-      done = payload.retention === 'casual' ? '잡담으로 표시했습니다 (10일 뒤 정리)' : '보통 보관으로 되돌렸습니다 (90일)';
+      done = payload.retention === 'casual' ? '잡담으로 표시했습니다 (5일 뒤 정리)' : '보통 보관으로 되돌렸습니다 (5일)';
     }
     api('/api/rooms/' + encodeURIComponent(state.room) + '/messages/' + id, {method:'PATCH', body: JSON.stringify(payload)})
       .then(function(d){
@@ -2291,7 +2319,8 @@
     }).join('');
   }
   function loadAgendas(){
-    return api('/api/agendas?decision=all&limit=200').then(function(d){
+    return api('/api/agendas?decision=all&limit=200', {etag:true}).then(function(d){
+      if (d && d.not_modified) return;
       state.agendas = d.agendas || [];
       state.agendaCounts = d.counts || {approved:0, rejected:0, held:0, deleted:0};
       state.agendaAlarms = d.alarms || 0;
@@ -2694,28 +2723,45 @@
     loadMembers();
     loadAgendas();
     if (state.timer) clearInterval(state.timer);
-    var tick = 0;
+    var lastHiddenPoll = 0, lastViewPoll = 0;
+    function pollView(){
+      lastViewPoll = Date.now();
+      loadRooms().catch(function(){});
+      loadAgendas();
+      loadTimeline();
+    }
     state.timer = setInterval(function(){
-      tick++;
-      // 화면을 보고 있지 않아도 새 글은 세어 둔다(탭 제목 (N) 표시용).
-      // 백그라운드 탭은 브라우저가 타이머를 늦추므로 실제 확인 간격은 더 길 수 있다.
-      loadMessages(false);
-      if (tick % 5 === 0){
+      var now = Date.now();
+      if (document.hidden){
+        // 가려진 탭은 60초에 한 번만 — 그마저도 ETag/빈 응답이면 거의 공짜다
+        if (now - lastHiddenPoll < POLL_HIDDEN_MS) return;
+        lastHiddenPoll = now;
+        loadMessages(false);
         loadRooms().catch(function(){});
         loadAgendas();
         loadTimeline();
+        loadMembers();
+        return;
       }
-      // AI 숫자는 패널을 닫아 두어도 15초마다 실제 연결 상태로 갱신한다
-      if (Date.now() - state.membersAt > 15000) loadMembers();
+      lastHiddenPoll = 0;
+      loadMessages(false); // 새 글 확인 — 새 글이 없으면 서버가 빈 목록으로 바로 답한다
+      if (now - lastViewPoll >= VIEW_MS) pollView();
+      // AI 숫자는 패널을 닫아 두어도 1분마다 실제 연결 상태로 갱신한다
+      if (now - state.membersAt >= MEMBERS_MS) loadMembers();
     }, POLL_MS);
     document.addEventListener('visibilitychange', function(){
       if (!document.hidden){
         state.hiddenCount = 0;
         updateTitle();
+        lastHiddenPoll = 0;
+        lastViewPoll = Date.now();
+        // 다시 보이면 바로 한 번에 맞춘다(새 글·방·안건·타임라인·AI 상태)
         loadMessages(false);
         loadRooms().catch(function(){});
         loadAgendas();
         loadTimeline();
+        loadMembers();
+        updateLatestBtn();
       }
     });
   }

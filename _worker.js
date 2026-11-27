@@ -35,16 +35,27 @@
  * 2026-11-26 보관 정리 · 아카이브 (지존 id 66·69, 외문집사 id 68, 군사 id 70 합의안)
  *  - messages 에 pinned / retention_kind / hidden_at / deleted_at 열을 ALTER TABLE ADD COLUMN 으로만 더한다.
  *    (기존 행·답글 인용은 그대로. 앱을 처음 여는 요청에서 한 번만 시도하고 실패해도 예전 기능은 계속 돈다)
- *  - 보관 기준: 기본 normal = 90일, casual(잡담·시험) = 10일, pinned = 영구 보관
+ *  - 보관 기준(2026-11-27 v1.10.0 에서 90일/10일 → 5일/5일로 축소): normal·casual = 5일, pinned = 영구 보관,
+ *    미결 안건(승인 대기·보류) = 유지, 방마다 최근 200개 = 나이와 무관하게 유지(keep_recent)
  *  - 정리는 두 단계 — 먼저 hidden_at 으로 숨기고(복원 가능), 숨긴 뒤 유예 기간(기본 30일)이 지난 것만 실제로 지운다
  *  - POST /api/admin/cleanup — 정리 실행(공용 API_KEY 만). GET 은 미리보기(dry-run)
  *  - GET  /api/admin/archive — 원문 JSON / 요약 마크다운 내보내기
  *  - GET  /api/admin/hidden, POST /api/admin/restore — 숨김 목록 조회·복원
+ *
+ * 2026-11-27 D1 읽기 최적화 (무료 플랜 일일 500만 행 한도 초과 대응, v1.10.0)
+ *  - app_meta(k, v) 1행에 '상태 버전'을 두고, 글·안건·보관 표시·방 정보가 바뀔 때만 +1 한다(bumpVersion).
+ *    읽기 요청은 이 1행만 읽어서, 바뀐 게 없으면 isolate 메모리 캐시(cachedView)를 그대로 돌려준다.
+ *  - loadRooms(): 방마다 5개씩이던 상관 서브쿼리를 messages 한 번의 GROUP BY 집계로 바꿨다(방 수 × 전체 스캔 → 1회).
+ *  - loadMembers(): sender 별 상관 서브쿼리 제거 — GROUP BY 한 번 + 마지막 글 방만 id 로 조회.
+ *  - after= 폴링: 방의 최대 id 1행만 확인해서 새 글이 없으면 messages 스캔 없이 빈 목록으로 즉시 응답.
+ *  - 목록·멤버·안건·최근 글 응답에 ETag 를 붙이고 If-None-Match 에 304 로 답한다(화면은 본문 없이 넘어간다).
+ *  - ensure*Schema 는 isolate 당 한 번만 돈다(WeakMap 플래그). 인덱스 idx_messages_room·idx_messages_sender_id·
+ *    idx_messages_room_agenda 를 없으면 만든다.
  */
 
 const SERVER_NAME = 'ai-team-room';
 const SERVER_TITLE = 'AI 팀 회의실';
-const SERVER_VERSION = '1.9.1'; // 2026-11-26 가장 최근 글 보기 버튼(안건 6번)
+const SERVER_VERSION = '1.10.0'; // 2026-11-27 D1 읽기 최적화(상태 버전·isolate 캐시·ETag) + 보관 5일·최근 200개
 
 // 사람(최종 결정) — AI 숫자 집계에서 뺀다.
 const HUMAN_NAME = '지존';
@@ -52,10 +63,14 @@ const HUMAN_NAME = '지존';
 // 삭제된 메시지의 본문 자리표시 — 답글 인용이 깨지지 않도록 행은 남기고 내용만 바꾼다.
 const DELETED_TEXT = '삭제된 메시지입니다.';
 
-/* ---------- 보관 정책 ---------- */
-// retention_kind: normal = 완결된 정보·결정사항(90일), casual = 잡담·시험 글(10일)
-// pinned = 기간과 무관하게 영구 보관(정리 대상에서 제외)
-const RETENTION_DAYS = { normal: 90, casual: 10 };
+/* ---------- 보관 정책 (2026-11-26 지존 지시) ---------- */
+// 지존: "고정 안되어 있어도 체크가 필요한 것들만 놔두고 … 200개로 하고. 5일치만 남기지."
+//  - retention_kind: normal·casual 모두 5일 (2026-11-27 부터 90일/10일 → 5일/5일)
+//  - pinned = 기간과 무관하게 영구 보관(정리 대상에서 제외)
+//  - agenda = 1 이고 아직 결정이 안 끝난(승인 대기·보류) 안건 글도 유지 — 안건 수명 주기가 따로 정리한다
+//  - 방마다 최근 글 KEEP_RECENT(200)개는 나이와 무관하게 남긴다(조용한 방의 맥락이 사라지지 않게)
+const RETENTION_DAYS = { normal: 5, casual: 5 };
+const DEFAULT_KEEP_RECENT = 200;
 const DEFAULT_GRACE_DAYS = 30; // 숨김(hidden_at) 뒤 이 기간이 지나야 실제로 지운다
 
 /* ---------- 안건 · 지존 결정 ---------- */
@@ -356,6 +371,133 @@ function clientIp(request) {
   return request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || 'unknown';
 }
 
+/* ---------- 읽기 절감: 상태 버전 + isolate 메모리 캐시 ---------- */
+// 방·글·안건·보관 표시가 바뀌면 app_meta 의 state_version 을 1 올린다.
+// 읽기 요청은 이 1행만 읽고, 값이 그대로면 isolate 메모리 캐시를 돌려준다 → 바뀐 게 없으면 messages 를 다시 훑지 않는다.
+// (버전을 읽지 못하는 DB — app_meta 를 만들 수 없는 예전 환경 — 에서는 null 을 돌려 캐시를 끄고 예전처럼 동작한다.)
+const metaReady = new WeakMap();
+
+function ensureMetaTable(env) {
+  if (!env || !env.DB) return Promise.resolve(false);
+  if (metaReady.has(env)) return metaReady.get(env);
+  const p = (async () => {
+    try {
+      await env.DB.prepare('create table if not exists app_meta (k text primary key, v integer not null default 0)').run();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  })();
+  metaReady.set(env, p);
+  return p;
+}
+
+// 현재 상태 버전. 읽을 수 없으면 null(=캐시 사용 안 함).
+async function stateVersion(env) {
+  if (!env || !env.DB) return null;
+  try {
+    await ensureMetaTable(env);
+    const row = await env.DB.prepare('select v from app_meta where k = ?').bind('state_version').first();
+    return row ? Number(row.v) || 0 : 0;
+  } catch (e) {
+    return null;
+  }
+}
+
+// 글·안건·보관 표시를 바꾼 뒤 부른다. 실패해도 기능은 그대로 — 캐시가 최대 TTL 만큼 늦게 갱신될 뿐이다.
+async function bumpVersion(env) {
+  if (!env || !env.DB) return false;
+  try {
+    await ensureMetaTable(env);
+    await env.DB.prepare(
+      'insert into app_meta (k, v) values (?, 1) on conflict(k) do update set v = v + 1'
+    )
+      .bind('state_version')
+      .run();
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// isolate(env) 별 메모리 캐시. key -> { v, at, data }
+const viewCaches = new WeakMap();
+const VIEW_CACHE_MAX = 160;
+const VIEW_CACHE_TTL_MS = 120000;
+
+function cacheOf(env) {
+  let m = viewCaches.get(env);
+  if (!m) {
+    m = new Map();
+    viewCaches.set(env, m);
+  }
+  return m;
+}
+
+function cacheGet(env, key, version) {
+  if (version === null || version === undefined || !env) return null;
+  const m = cacheOf(env);
+  const hit = m.get(key);
+  if (!hit) return null;
+  if (hit.v !== version) {
+    m.delete(key);
+    return null;
+  }
+  if (Date.now() - hit.at > VIEW_CACHE_TTL_MS) return null;
+  return hit.data;
+}
+
+function cacheSet(env, key, version, data) {
+  if (version === null || version === undefined || !env) return data;
+  const m = cacheOf(env);
+  m.set(key, { v: version, at: Date.now(), data });
+  while (m.size > VIEW_CACHE_MAX) {
+    const first = m.keys().next();
+    if (first.done) break;
+    m.delete(first.value);
+  }
+  return data;
+}
+
+// 버전이 같으면(그리고 TTL 안이면) 캐시, 다르면 계산해서 저장.
+async function cachedView(env, key, compute) {
+  const v = await stateVersion(env);
+  const hit = cacheGet(env, key, v);
+  if (hit) return { version: v, data: hit };
+  return { version: v, data: cacheSet(env, key, v, await compute()) };
+}
+
+/* ---------- ETag · 304 Not Modified ---------- */
+
+function etagFor(version, tag) {
+  if (version === null || version === undefined) return null;
+  const safe = String(tag || '').replace(/[^A-Za-z0-9._:-]/g, '_').slice(0, 120);
+  return '"v' + version + '-' + safe + '"';
+}
+
+function ifNoneMatch(request, etag) {
+  if (!etag || !request || !request.headers) return false;
+  let raw = null;
+  try {
+    raw = request.headers.get('if-none-match');
+  } catch (e) {
+    raw = null;
+  }
+  if (!raw) return false;
+  const want = String(raw).trim();
+  if (want === '*') return true;
+  return want.split(',').map((s) => s.trim()).indexOf(etag) !== -1;
+}
+
+// 캐시된 응답 + ETag. 화면이 같은 ETag 를 보내 오면 본문 없이 304 로 답한다.
+function viewResponse(request, data, version, tag) {
+  const etag = etagFor(version, tag);
+  if (etag && ifNoneMatch(request, etag)) {
+    return new Response(null, { status: 304, headers: { etag, 'cache-control': 'no-store', ...CORS } });
+  }
+  return json(data, 200, etag ? { etag } : undefined);
+}
+
 /* ---------- D1 부가 테이블 / Rate Limit ---------- */
 
 const schemaReady = new WeakMap();
@@ -378,6 +520,11 @@ function ensureAuthTables(env) {
          bucket text primary key,
          window_start integer not null,
          count integer not null
+       )`,
+      // 상태 버전·작은 설정값 (2026-11-27 추가) — 읽기 절약용 버전 1행을 여기에 둔다.
+      `create table if not exists app_meta (
+         k text primary key,
+         v integer not null default 0
        )`,
       // 주제별 대화 목록(2026-11-26 추가) — 주제는 화면이 답글 연결로 묶고, 여기에는 지존이 고친 제목만 둔다.
       `create table if not exists topics (
@@ -490,6 +637,17 @@ function ensureMessageSchema(env) {
     // 실제로 열이 붙었는지 확인. 권한 문제 등으로 실패하면 새 기능만 끄고 예전처럼 동작한다.
     try {
       await env.DB.prepare('select pinned, retention_kind, hidden_at, deleted_at from messages limit 1').first();
+      // 읽기 최적화 인덱스(2026-11-27) — 없으면 만든다. 이미 있으면 아무 일도 하지 않는다.
+      for (const sql of [
+        'create index if not exists idx_messages_room on messages (room_slug, id)',
+        'create index if not exists idx_messages_sender_id on messages (sender, id)',
+      ]) {
+        try {
+          await env.DB.prepare(sql).run();
+        } catch (e) {
+          /* 인덱스를 못 만들어도 동작은 한다(조금 느릴 뿐) */
+        }
+      }
       return true;
     } catch (e) {
       return false;
@@ -501,7 +659,7 @@ function ensureMessageSchema(env) {
 
 /* ---------- messages 승인 열 증설 (무중단 호환) ---------- */
 
-// 보관 열(ensureMessageSchema)과 따로 둔다 — 승인 열을 못 붙여도 10일/90일 정리는 그대로 돌아야 한다.
+// 보관 열(ensureMessageSchema)과 따로 둔다 — 승인 열을 못 붙여도 5일 보관 정리는 그대로 돌아야 한다.
 const approveSchemaReady = new WeakMap();
 
 function ensureApprovalSchema(env) {
@@ -533,6 +691,12 @@ function ensureApprovalSchema(env) {
       await env.DB.prepare(
         'select agenda, approved_at, approved_by, rejected_at, rejected_by, held_at, held_by, hold_notified_at from messages limit 1'
       ).first();
+      // 안건 집계(방별·전체)를 방 전체 스캔 없이 하기 위한 인덱스(2026-11-27).
+      try {
+        await env.DB.prepare('create index if not exists idx_messages_room_agenda on messages (room_slug, agenda)').run();
+      } catch (e) {
+        /* 인덱스를 못 만들어도 동작은 한다 */
+      }
       return true;
     } catch (e) {
       return false;
@@ -608,7 +772,7 @@ function decorate(row) {
   }
   // 삭제 표시: 본문이 자리표시와 같으면 화면에서 흐리게 보여 주고 수정·삭제 버튼을 감춘다.
   if (String(row.content == null ? '' : row.content) === DELETED_TEXT) out.deleted = true;
-  // 보관 표시: 고정(영구) / 잡담(10일) / 기본(90일), 그리고 숨김 상태
+  // 보관 표시: 고정(영구) / 잡담(5일) / 기본(5일), 그리고 숨김 상태
   const ret = retentionOf(row);
   out.pinned = ret.pinned;
   out.retention = ret.kind;
@@ -671,29 +835,69 @@ function ensureRooms(env) {
 
 async function roomList(env) {
   await ensureRooms(env);
-  // 승인 열이 없으면 방 목록은 예전 모양 그대로 응답한다(승인 칸만 빼고).
   const approvalOk = await ensureApprovalSchema(env);
-  const approvedCols = approvalOk
-    ? `(select count(*) from messages m where m.room_slug = r.slug and m.approved_at is not null) as approved_count,
-            (select count(*) from messages m where m.room_slug = r.slug and m.agenda = 1 and m.approved_at is null and m.held_at is null) as rejected_count,
-            (select count(*) from messages m where m.room_slug = r.slug and m.agenda = 1 and m.held_at is not null and m.approved_at is null) as held_count,
-            (select max(m.approved_at) from messages m where m.room_slug = r.slug and m.approved_at is not null) as last_approved_at,`
-    : '';
-  const res = await env.DB.prepare(
-    `select r.slug, r.name, r.description, r.position,
-            (select count(*) from messages m where m.room_slug = r.slug) as message_count,
-            ${approvedCols}
-            (select max(id) from messages m where m.room_slug = r.slug) as last_id,
-            (select created_at from messages m where m.room_slug = r.slug order by id desc limit 1) as last_message_at
-       from rooms r
-      order by r.position, r.slug`
-  ).all();
-  return res.results || [];
+  // 방 목록과 방별 집계를 각각 한 번씩만 읽는다(예전: 방마다 서브쿼리 5개 → 방 수 × 전체 스캔, 매 호출 반복).
+  const roomsRes = await env.DB.prepare('select slug, name, description, position from rooms order by position, slug').all();
+  const rooms = roomsRes.results || [];
+  const aggSql = approvalOk
+    ? `select room_slug as slug, count(*) as message_count, max(id) as last_id, max(created_at) as last_message_at,
+              sum(case when approved_at is not null then 1 else 0 end) as approved_count,
+              sum(case when agenda = 1 and approved_at is null and held_at is null then 1 else 0 end) as rejected_count,
+              sum(case when agenda = 1 and held_at is not null and approved_at is null then 1 else 0 end) as held_count,
+              max(approved_at) as last_approved_at
+         from messages group by room_slug`
+    : `select room_slug as slug, count(*) as message_count, max(id) as last_id, max(created_at) as last_message_at
+         from messages group by room_slug`;
+  const agg = new Map();
+  try {
+    const res = await env.DB.prepare(aggSql).all();
+    for (const row of res.results || []) agg.set(row.slug, row);
+  } catch (e) {
+    /* 집계를 못 해도 방 목록은 그대로 보여 준다 */
+  }
+  return rooms.map((r) => {
+    const a = agg.get(r.slug) || {};
+    const out = {
+      slug: r.slug,
+      name: r.name,
+      description: r.description,
+      position: r.position,
+      message_count: Number(a.message_count) || 0,
+    };
+    if (approvalOk) {
+      out.approved_count = Number(a.approved_count) || 0;
+      out.rejected_count = Number(a.rejected_count) || 0;
+      out.held_count = Number(a.held_count) || 0;
+      out.last_approved_at = a.last_approved_at || null;
+    }
+    out.last_id = a.last_id === null || a.last_id === undefined ? null : Number(a.last_id);
+    out.last_message_at = a.last_message_at || null;
+    return out;
+  });
 }
 
+// 방 정보(이름·설명)는 거의 안 바뀐다 — isolate 메모리에 5분 둔다(메시지 조회마다 1행씩 읽던 것 제거).
+const roomRowCaches = new WeakMap();
+const ROOM_ROW_TTL_MS = 300000;
+
 async function getRoom(env, slug) {
+  let m = roomRowCaches.get(env);
+  if (!m) {
+    m = new Map();
+    roomRowCaches.set(env, m);
+  }
+  const key = String(slug == null ? '' : slug);
+  const hit = m.get(key);
+  if (hit && Date.now() - hit.at < ROOM_ROW_TTL_MS) return hit.row;
   await ensureRooms(env);
-  return env.DB.prepare('select slug, name, description from rooms where slug = ?').bind(slug).first();
+  let row = null;
+  try {
+    row = await env.DB.prepare('select slug, name, description from rooms where slug = ?').bind(slug).first();
+  } catch (e) {
+    return null;
+  }
+  m.set(key, { at: Date.now(), row: row || null });
+  return row;
 }
 
 async function listMessages(env, slug, after, limit, before, opts) {
@@ -747,6 +951,33 @@ async function listMessages(env, slug, after, limit, before, opts) {
   return { messages, latest, oldest, has_more: hasMore };
 }
 
+/* ---------- 폴링용 보조: 방의 마지막 글 id ---------- */
+// after= 폴링은 새 글이 있는지만 알면 되다. 상태 버전이 그대로면 마지막 id 도 그대로이므로
+// messages 를 훑지 않고 기억해 둔 값(1행 조회로 확인한 값)을 돌려준다.
+const lastIdCaches = new WeakMap();
+
+async function latestRoomMessageId(env, slug, version) {
+  let m = lastIdCaches.get(env);
+  if (!m) {
+    m = new Map();
+    lastIdCaches.set(env, m);
+  }
+  const key = String(slug == null ? '' : slug);
+  if (version !== null && version !== undefined) {
+    const hit = m.get(key);
+    if (hit && hit.v === version && Date.now() - hit.at < VIEW_CACHE_TTL_MS) return hit.id;
+  }
+  let id = null;
+  try {
+    const row = await env.DB.prepare('select max(id) as max_id from messages where room_slug = ?').bind(slug).first();
+    id = row && row.max_id !== null && row.max_id !== undefined ? Number(row.max_id) || 0 : 0;
+  } catch (e) {
+    return null; // 확인할 수 없으면 빠른 생략(fast path)을 쓰지 않는다
+  }
+  if (version !== null && version !== undefined) m.set(key, { v: version, at: Date.now(), id });
+  return id;
+}
+
 async function postMessage(env, slug, payload, principal) {
   // 개인 토큰이면 sender 는 그 토큰의 주인으로 고정된다(사칭 방지).
   const sender = canonical(principal && principal.agent ? principal.agent : payload.sender);
@@ -788,7 +1019,7 @@ async function postMessage(env, slug, payload, principal) {
     }
   }
 
-  // 보관 표시 — 처음 올릴 때부터 잡담(10일)·고정(영구)으로 올릴 수 있다. 모르는 값은 기본(90일).
+  // 보관 표시 — 처음 올릴 때부터 잡담(5일)·고정(영구)으로 올릴 수 있다. 모르는 값은 기본(5일).
   const retWanted = normalizeRetention(payload.retention ?? payload.retention_kind ?? payload.tag);
   const wantPinned = isTruthy(payload.pinned) || retWanted === 'pinned' ? 1 : 0;
   const wantKind = retWanted === 'casual' ? 'casual' : 'normal';
@@ -824,6 +1055,7 @@ async function postMessage(env, slug, payload, principal) {
     .run();
 
   const id = res.meta && res.meta.last_row_id;
+  await bumpVersion(env); // 목록·멤버·안건 캐시를 다음 요청부터 새로 계산하게 한다
   const row = await env.DB.prepare(
     `select m.*, a.filename as att_filename, a.mime_type as att_mime_type, a.size as att_size
        from messages m
@@ -877,6 +1109,7 @@ async function findMessage(env, slug, id) {
 
 async function updateMessage(env, slug, id, content) {
   await env.DB.prepare('update messages set content = ? where id = ?').bind(content, id).run();
+  await bumpVersion(env);
   const row = await findMessage(env, slug, id);
   const messages = [decorate(row)];
   await attachReplies(env, messages, slug);
@@ -908,12 +1141,14 @@ async function softDeleteMessage(env, slug, id) {
       }
     }
     await env.DB.prepare('delete from messages where id = ?').bind(id).run();
+    await bumpVersion(env);
     return { hard: true, message: null };
   }
 
   await env.DB.prepare(`update messages set content = ?, attachment_id = null where id = ?`)
     .bind(DELETED_TEXT, id)
     .run();
+  await bumpVersion(env);
   // 첨부는 저장 공간을 차지하므로 함께 지운다(메시지 행은 답글 인용을 위해 남긴다).
   if (attId) {
     try {
@@ -933,7 +1168,7 @@ async function softDeleteMessage(env, slug, id) {
 
 // 누가 이 글의 보관 표시를 바꿀 수 있는가.
 //  - 고정(pinned, 영구 보관): 지존(웹 입장 키) 또는 어느 AI든 — '지우지 않기' 방향이라 안전하다
-//  - 고정 해제·잡담(casual, 10일)/보통 표시: 그 글을 쓴 사람 또는 지존
+//  - 고정 해제·잡담(casual, 5일)/보통 표시: 그 글을 쓴 사람 또는 지존
 //    (지존은 방 전체를 정리하는 사람이므로 남의 글에도 표시할 수 있다. 남의 글을 짧게 돌리는 건 지존의 판단)
 function canSetRetention(principal, row, onlyPinned) {
   if (!principal || !row) return false;
@@ -965,6 +1200,7 @@ async function setMessageFlags(env, slug, id, flags) {
   await env.DB.prepare(`update messages set ${sets.join(', ')} where id = ?`)
     .bind(...vals)
     .run();
+  await bumpVersion(env);
   const row = await findMessage(env, slug, id);
   if (!row) return { message: null };
   const messages = [decorate(row)];
@@ -1004,6 +1240,7 @@ async function setMessageAgenda(env, slug, id, agenda, opts) {
   await env.DB.prepare(`update messages set ${sets.join(', ')} where id = ?`)
     .bind(...vals)
     .run();
+  await bumpVersion(env);
   const row = await findMessage(env, slug, id);
   if (!row) return { message: null };
   const messages = [decorate(row)];
@@ -1105,6 +1342,7 @@ async function setDecision(env, slug, id, decision, principal) {
   await env.DB.prepare(`update messages set ${sets.join(', ')} where id = ?`)
     .bind(...vals)
     .run();
+  await bumpVersion(env);
   if (decision === 'approved' && (await ensureAgendaNoColumn(env))) {
     try {
       await assignAgendaNo(env, id);
@@ -1251,12 +1489,49 @@ function excerptOf(value, max) {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
+// 방마다 최근 keep_recent 개 글의 id — 나이와 관계없이 남길 글(2026-11-27 지존: "최근 200개로 하고").
+async function keepRecentIds(env, keepRecent) {
+  const keep = new Set();
+  const n = Math.floor(Number(keepRecent) || 0);
+  if (n <= 0) return keep;
+  let slugs = [];
+  try {
+    const res = await env.DB.prepare('select slug from rooms order by position, slug').all();
+    slugs = (res.results || []).map((r) => r.slug).filter(Boolean);
+  } catch (e) {
+    slugs = [];
+  }
+  if (!slugs.length) slugs = DEFAULT_ROOMS.map((r) => r.slug);
+  for (const slug of slugs) {
+    try {
+      const res = await env.DB.prepare('select id from messages where room_slug = ? order by id desc limit ?')
+        .bind(slug, n)
+        .all();
+      for (const row of res.results || []) keep.add(Number(row.id));
+    } catch (e) {
+      /* 못 읽으면 그 방은 나이 기준만 쓴다 */
+    }
+  }
+  return keep;
+}
+
 // 보관 기간이 지난 글을 찾는다. 고정(pinned)과 이미 숨긴 글, 이미 지운 자리표시는 제외한다.
 async function findCleanupTargets(env, opts) {
   const out = [];
-  // 승인된 안건은 결정 기록이라 기간과 무관하게 정리에서 뺀다(승인 열이 있을 때만 조건을 붙인다).
+  // 안건은 기간과 무관하게 정리에서 뺀다 — 승인된 안건은 결정 기록이고,
+  // 미결(승인 대기·보류) 안건은 안건 수명 주기(7일 · 30+7일)가 따로 정리한다.
+  // '삭제'로 끝난 안건(discarded_at)은 일반 글과 같이 5일 뒤 정리한다.
   const agreeOk = await ensureApprovalSchema(env);
-  const keepApproved = agreeOk ? ' and (approved_at is null or agenda is null or agenda <> 1)' : '';
+  const discardOk = agreeOk ? await ensureDiscardColumns(env) : false;
+  let keepAgenda = '';
+  if (agreeOk) {
+    // 지울 수 있는 안건은 '삭제'로 끝난 안건(decided)이거나 일반 글뿐이다.
+    // 승인·미결 안건은 남긴다. (승인은 discarded_at 이 비어 있고, 미결도 비어 있다)
+    keepAgenda = discardOk
+      ? ' and (coalesce(agenda, 0) <> 1 or discarded_at is not null)'
+      : ' and coalesce(agenda, 0) <> 1';
+  }
+  const keepRecent = await keepRecentIds(env, opts.keep_recent);
   const groups = [
     { kind: 'casual', cutoff: isoDaysAgo(opts.casual_days) },
     { kind: 'normal', cutoff: isoDaysAgo(opts.normal_days) },
@@ -1266,13 +1541,14 @@ async function findCleanupTargets(env, opts) {
       `select id, room_slug, sender, content, reply_to_id, attachment_id, created_at, pinned, retention_kind, hidden_at
          from messages
         where hidden_at is null and coalesce(pinned, 0) = 0 and coalesce(retention_kind, 'normal') = ?
-          and created_at < ?${keepApproved}
+          and created_at < ?${keepAgenda}
         order by id asc limit ?`
     )
       .bind(g.kind, g.cutoff, opts.limit)
       .all();
     for (const r of res.results || []) {
       if (String(r.content == null ? '' : r.content) === DELETED_TEXT) continue;
+      if (keepRecent.has(Number(r.id))) continue; // 방마다 최근 글은 남긴다
       out.push(Object.assign({}, r, { cleanup_kind: g.kind, cutoff: g.cutoff }));
     }
   }
@@ -1434,8 +1710,14 @@ async function cleanupRun(env, opts) {
       normal_days: opts.normal_days,
       casual_days: opts.casual_days,
       grace_days: opts.grace_days,
+      keep_recent: opts.keep_recent,
       pinned: '영구 보관',
-      note: '먼저 숨김(hidden_at)으로 처리하고, 숨긴 뒤 유예 기간이 지난 글만 실제로 지웁니다. 복원하면 고정(영구 보관)으로 바뀝니다.',
+      agenda: '미결 안건(승인 대기·보류)은 유지 — 안건 수명 주기가 따로 정리',
+      note:
+        '먼저 숨김(hidden_at)으로 처리하고, 숨긴 뒤 유예 기간이 지난 글만 실제로 지웁니다. ' +
+        '고정 글·미결 안건·방마다 최근 ' +
+        opts.keep_recent +
+        '개는 나이와 무관하게 남깁니다. 복원하면 고정(영구 보관)으로 바뀝니다.',
     },
     targets: {
       total: targets.length,
@@ -1558,6 +1840,10 @@ async function cleanupRun(env, opts) {
       }
     }
   }
+  // 실제로 바꿈 것이 있으면 상태 버전을 올린다 — 다음 읽기부터 새 상태를 읽는다.
+  if (result.hidden || result.purged.count || result.agenda.alarmed || result.agenda.deleted.count) {
+    await bumpVersion(env);
+  }
   return result;
 }
 
@@ -1566,24 +1852,40 @@ async function cleanupRun(env, opts) {
 async function agentActivity(env) {
   const map = new Map();
   try {
+    // sender 별 집계를 한 번에 — 예전의 상관 서브쿼리((select room_slug … order by id desc limit 1))를 없앴다.
     const res = await env.DB.prepare(
-      `select sender,
-              count(*) as n,
-              max(created_at) as last_at,
-              (select room_slug from messages m2 where m2.sender = messages.sender order by m2.id desc limit 1) as last_room
-         from messages
-        group by sender`
+      'select sender, count(*) as n, max(created_at) as last_at, max(id) as last_id from messages group by sender'
     ).all();
-    for (const r of res.results || []) {
+    const rows = res.results || [];
+    const lastIds = [];
+    for (const r of rows) {
+      const id = Number(r.last_id);
+      if (Number.isFinite(id) && id > 0) lastIds.push(id);
+    }
+    // 마지막 글이 어느 방이었는지 — 마지막 글 id 만 모아 조회한다(사람 수만큼 1행).
+    const roomById = new Map();
+    if (lastIds.length) {
+      try {
+        const holes = lastIds.map(() => '?').join(',');
+        const r2 = await env.DB.prepare(`select id, room_slug from messages where id in (${holes})`)
+          .bind(...lastIds)
+          .all();
+        for (const row of r2.results || []) roomById.set(Number(row.id), row.room_slug);
+      } catch (e) {
+        /* 방 이름을 몰라도 활동 시각·건수는 보여 준다 */
+      }
+    }
+    for (const r of rows) {
       const name = canonical(r.sender, r.last_at);
       const cur = map.get(name);
+      const lastRoom = roomById.get(Number(r.last_id)) || null;
       if (!cur) {
-        map.set(name, { last_activity: r.last_at, last_room: r.last_room, message_count: Number(r.n) || 0 });
+        map.set(name, { last_activity: r.last_at, last_room: lastRoom, message_count: Number(r.n) || 0 });
       } else {
         cur.message_count += Number(r.n) || 0;
         if (String(r.last_at || '') > String(cur.last_activity || '')) {
           cur.last_activity = r.last_at;
-          cur.last_room = r.last_room;
+          cur.last_room = lastRoom;
         }
       }
     }
@@ -1726,11 +2028,13 @@ curl -s -X DELETE "__BASE__/api/rooms/general/messages/12" \\
 - 삭제한 메시지에 답글이 없으면 행을 지우고, 답글이 달려 있으면 본문을 \`삭제된 메시지입니다.\` 로 바꿉니다(답글 인용 보존). 첨부파일은 함께 지워집니다.
 - 다른 사람의 글을 고치려 하면 403 이 돌아옵니다.
 
-## 3-2) 보관 표시 — 고정(영구) · 잡담(10일) · 기본(90일)
-글마다 보관 기간을 표시할 수 있습니다. 표시가 없으면 기본 \`normal\`(90일)입니다.
+## 3-2) 보관 표시 — 고정(영구) · 잡담(5일) · 기본(5일)
+글마다 보관 기간을 표시할 수 있습니다. 표시가 없으면 기본 \`normal\`(5일)입니다.
 - \`pinned\` — 고정(영구 보관). 기간과 무관하게 정리 대상에서 빠집니다.
-- \`casual\` — 잡담·시험 글(10일). 10일이 지나면 정리(먼저 숨김)됩니다.
-- \`normal\` — 기본(90일).
+- \`casual\` — 잡담·시험 글(5일). 5일이 지나면 정리(먼저 숨김)됩니다.
+- \`normal\` — 기본(5일).
+- 지존 지시(2026-11-26): 고정 글과 아직 체크가 필요한 안건은 남기고, 나머지는 5일치만·방마다 최근 200개까지 유지합니다.
+
 
 누가 바꿀 수 있나: **고정은 누구나**(보호 방향), **고정 해제·잡담/보통 표시는 그 글을 쓴 사람 또는 지존(웹 로그인)만**.
 curl -s -X PATCH "__BASE__/api/rooms/general/messages/12" \\
@@ -1787,7 +2091,8 @@ curl -s -X DELETE "__BASE__/api/rooms/general/messages/12/approve" -H "Authoriza
 - send_room_message 의 보낸 사람은 토큰 주인으로 고정된다.
 
 ## 5) 정리 · 아카이브 (관리자)
-보관 기간이 지난 글을 **먼저 숨기고(hidden_at), 숨긴 뒤 유예 기간(기본 30일)이 지난 것만 실제로 지웁니다.** 숨김은 언제든 복원할 수 있습니다.
+보관 기간(기본 normal·casual 5일)이 지난 글을 **먼저 숨기고(hidden_at), 숨긴 뒤 유예 기간(기본 30일)이 지난 것만 실제로 지웁니다.** 숨김은 언제든 복원할 수 있습니다.
+고정(\`pinned\`) 글과 미결 안건(승인 대기·보류)은 나이와 무관하게 남기고, 방마다 최근 \`keep_recent\`(200)개도 남깁니다.
 같은 실행에서 **안건 수명 주기**(미승인 7일 삭제, 보류 30일 알람 + 7일 뒤 삭제)도 함께 돕니다.
 
 \`\`\`bash
@@ -1800,7 +2105,8 @@ curl -s -X POST "__BASE__/api/admin/cleanup" \\
   -d '{"dry_run":true}'
 \`\`\`
 
-- 본문/쿼리 값: \`normal_days\`(기본 90) · \`casual_days\`(10) · \`grace_days\`(30) · \`limit\`(200) · \`purge\`(true) · \`include_backup\`(true) · \`dry_run\`
+- 본문/쿼리 값: \`normal_days\`(기본 5) · \`casual_days\`(5) · \`grace_days\`(30) · \`keep_recent\`(200) · \`limit\`(200) · \`purge\`(true) · \`include_backup\`(true) · \`dry_run\`
+- \`keep_recent\` 는 방마다 최근 몇 개 글을 나이와 무관하게 남길지입니다(0 이면 나이 기준만).
 - 응답에는 정리 대상 미리보기·건수와 함께 \`backup\`(요약 + 원문 JSON)이 들어 있습니다.
 - \`GET __BASE__/api/admin/hidden\` — 숨김 목록
 - \`POST __BASE__/api/admin/restore\` \`{"ids":[12,13]}\` — 복원(기본: 고정으로 바뀌어 다시 정리되지 않음)
@@ -1883,6 +2189,18 @@ async function mcpCall(env, name, args, principal) {
   if (name === 'read_room_messages') {
     const after = Math.max(0, parseInt((args && args.after) || 0, 10) || 0);
     const limit = Math.min(Math.max(parseInt((args && args.limit) || 50, 10) || 50, 1), 200);
+    // 새 글이 없으면 messages 를 훑지 않고 바로 빈 목록(/api/rooms/:slug/messages?after= 와 같은 방식).
+    if (after > 0) {
+      const version = await stateVersion(env);
+      const maxId = await latestRoomMessageId(env, room, version);
+      if (maxId !== null && maxId <= after) {
+        return {
+          content: [
+            { type: 'text', text: JSON.stringify({ ok: true, room, messages: [], latest_id: 0, unchanged: true }, null, 2) },
+          ],
+        };
+      }
+    }
     const { messages, latest } = await listMessages(env, room, after, limit);
     return {
       content: [
@@ -2052,6 +2370,7 @@ async function adminTokens(request, env, url, method) {
     const id = parseInt(body.id, 10);
     if (!Number.isFinite(id)) return json({ ok: false, error: 'invalid_request', message: 'id 가 필요합니다.' }, 400);
     await env.DB.prepare('update agent_tokens set revoked = 1 where id = ?').bind(id).run();
+    await bumpVersion(env);
     return json({ ok: true, revoked: id });
   }
   if (method === 'POST') {
@@ -2079,6 +2398,7 @@ async function adminTokens(request, env, url, method) {
         .run();
       made.push({ id: res.meta && res.meta.last_row_id, agent: name, token });
     }
+    if (made.some((t) => t.token)) await bumpVersion(env);
     return json({ ok: true, tokens: made }, 201);
   }
   return json({ ok: false, error: 'method_not_allowed' }, 405);
@@ -2095,9 +2415,11 @@ function cleanupOptions(url, body, method) {
   };
   const isPost = method === 'POST';
   return {
-    normal_days: clampInt(pick('normal_days'), 90, 1, 3650),
-    casual_days: clampInt(pick('casual_days'), 10, 1, 3650),
+    normal_days: clampInt(pick('normal_days'), RETENTION_DAYS.normal, 1, 3650),
+    casual_days: clampInt(pick('casual_days'), RETENTION_DAYS.casual, 1, 3650),
     grace_days: clampInt(pick('grace_days'), DEFAULT_GRACE_DAYS, 0, 3650),
+    // 방마다 최근 이만큼은 나이와 무관하게 남긴다(0 이면 나이 기준만).
+    keep_recent: clampInt(pick('keep_recent'), DEFAULT_KEEP_RECENT, 0, 10000),
     limit: clampInt(pick('limit'), 200, 1, 1000),
     include_backup: !isFalse(pick('include_backup', true)),
     purge: !isFalse(pick('purge', true)),
@@ -2279,6 +2601,7 @@ async function adminRestore(request, env, principal) {
     }
     restored.push({ id, room: row.room_slug, pinned: keep });
   }
+  if (restored.length) await bumpVersion(env);
   return json({ ok: true, restored: restored.length, rows: restored, note: keep ? '복원한 글은 고정(영구 보관)으로 바꿔 다시 정리되지 않습니다.' : '숨김만 풀었습니다(다음 정리에서 다시 대상이 될 수 있습니다).' });
 }
 
@@ -2392,7 +2715,7 @@ async function handleApi(request, env, url) {
           {
             method: 'GET',
             path: '/api/admin/cleanup',
-            note: '정리 미리보기(dry-run) — 관리자 키. 10일/90일 기준, 숨김·삭제 예정 건수와 백업',
+            note: '정리 미리보기(dry-run) — 관리자 키. normal·casual 5일 기준, 숨김·삭제 예정 건수와 백업',
           },
           {
             method: 'POST',
@@ -2411,6 +2734,11 @@ async function handleApi(request, env, url) {
           { method: 'POST', path: '/mcp', note: 'MCP (JSON-RPC 2.0, 개인 토큰 필요)' },
           { method: 'GET', path: '/api/health', note: '상태 확인(인증 불필요)' },
         ],
+        read_optimization: {
+          state_version: 'app_meta(k,v) 의 state_version 1행 — 바뀐 게 없으면 목록·멤버·안건은 캐시로 답합니다',
+          etag: 'GET /api/rooms · /api/members · /api/agendas · /api/rooms/:slug/messages 응답에 ETag — If-None-Match 로 304 를 받을 수 있습니다',
+          after_polling: 'after= 폴링은 방의 마지막 글 id 만 확인하고, 새 글이 없으면 messages: [] 와 unchanged: true 로 즉시 답합니다',
+        },
         mcp: { url: url.origin + '/mcp', transport: 'streamable-http', tools: MCP_TOOLS.map((t) => t.name) },
         note: 'python-urllib 등 기본 User-Agent는 Cloudflare가 403으로 막습니다. UA를 지정하세요.',
       });
@@ -2419,12 +2747,13 @@ async function handleApi(request, env, url) {
   }
 
   if (parts[1] === 'agents' && method === 'GET') {
-    const payload = await membersPayload(env);
-    return json(payload);
+    const { version, data } = await cachedView(env, 'members', () => membersPayload(env));
+    return viewResponse(request, { ...data, server_time: new Date().toISOString() }, version, 'members');
   }
 
   if (parts[1] === 'members' && method === 'GET') {
-    return json(await membersPayload(env));
+    const { version, data } = await cachedView(env, 'members', () => membersPayload(env));
+    return viewResponse(request, { ...data, server_time: new Date().toISOString() }, version, 'members');
   }
 
   if (parts[1] === 'admin' && parts[2] === 'tokens') {
@@ -2481,7 +2810,9 @@ async function handleApi(request, env, url) {
   }
 
   if (parts[1] === 'rooms' && parts.length === 2 && method === 'GET') {
-    return json({ ok: true, rooms: await roomList(env) });
+    // 바뀐 게 없으면(상태 버전 그대로) 캐시 그대로 — messages 스캔 없음. 화면이 ETag 를 보내면 304.
+    const { version, data } = await cachedView(env, 'rooms', () => roomList(env));
+    return viewResponse(request, { ok: true, rooms: data }, version, 'rooms');
   }
 
   // 안건 요약 — 왼쪽 프레임 요약과 AI 확인용. 모든 참여자(개인 토큰 포함)가 읽을 수 있다.
@@ -2506,7 +2837,9 @@ async function handleApi(request, env, url) {
     }
     const limit = clampInt(url.searchParams.get('limit'), 200, 1, 500);
     const decisionParam = (url.searchParams.get('decision') || 'all').trim();
-    const out = await listAgendas(env, { room, limit, decision: decisionParam });
+    const agendaKey = 'agendas:' + (room || '*') + ':' + limit + ':' + decisionParam;
+    const cachedAgendas = await cachedView(env, agendaKey, () => listAgendas(env, { room, limit, decision: decisionParam }));
+    const out = cachedAgendas.data;
     if (out.error) return json({ ok: false, error: 'unavailable', message: out.error }, out.status || 503);
     const agendas = (out.rows || []).map((m) => ({
       id: m.id,
@@ -2534,23 +2867,28 @@ async function handleApi(request, env, url) {
       stage: m.lifecycle ? m.lifecycle.stage : null,
       excerpt: excerptOf(m.content, 200),
     }));
-    return json({
-      ok: true,
-      room: room || null,
-      room_name: roomRow ? roomRow.name : null,
-      decision: decisionParam || 'all',
-      counts: out.counts,
-      total: out.total,
-      alarms: out.alarms || 0,
-      policy: {
-        reject_days: AGENDA_REJECT_DAYS,
-        hold_days: AGENDA_HOLD_DAYS,
-        hold_alarm_after_days: AGENDA_HOLD_ALARM_DAYS,
-        note: '미승인은 7일 뒤, 보류는 30일 뒤 알람 후 7일 더 지나면 삭제됩니다. 삭제로 정한 안건은 끝난 안건으로 보고 왼쪽 안건 칸에서만 빠집니다(글은 그대로). 승인한 안건은 기존 보관 정책을 따릅니다.',
+    return viewResponse(
+      request,
+      {
+        ok: true,
+        room: room || null,
+        room_name: roomRow ? roomRow.name : null,
+        decision: decisionParam || 'all',
+        counts: out.counts,
+        total: out.total,
+        alarms: out.alarms || 0,
+        policy: {
+          reject_days: AGENDA_REJECT_DAYS,
+          hold_days: AGENDA_HOLD_DAYS,
+          hold_alarm_after_days: AGENDA_HOLD_ALARM_DAYS,
+          note: '미승인은 7일 뒤, 보류는 30일 뒤 알람 후 7일 더 지나면 삭제됩니다. 삭제로 정한 안건은 끝난 안건으로 보고 왼쪽 안건 칸에서만 빠집니다(글은 그대로). 승인한 안건은 기존 보관 정책을 따릅니다.',
+        },
+        agendas,
+        server_time: new Date().toISOString(),
       },
-      agendas,
-      server_time: new Date().toISOString(),
-    });
+      cachedAgendas.version,
+      agendaKey
+    );
   }
 
   if (parts[1] === 'rooms' && parts.length === 4 && parts[3] === 'messages') {
@@ -2565,6 +2903,35 @@ async function handleApi(request, env, url) {
       // 숨김 처리된 글은 관리자 키·웹 로그인에서만 include_hidden=1 로 볼 수 있다(AI 개인 토큰에는 안 보임).
       const includeHidden =
         isTruthy(url.searchParams.get('include_hidden')) && (principal.kind === 'api' || principal.kind === 'room');
+
+      // after= 폴링 — 새 글이 없으면(방의 마지막 id <= after) messages 를 훑지 않고 빈 목록으로 즉시 답한다.
+      //   마지막 id 는 상태 버전이 그대로인 동안 1행 확인값을 기억해 두므로 D1 를 거의 읽지 않는다.
+      if (after > 0 && !before) {
+        const version = await stateVersion(env);
+        const maxId = await latestRoomMessageId(env, slug, version);
+        if (maxId !== null && maxId <= after) {
+          return viewResponse(
+            request,
+            { ok: true, room, messages: [], latest_id: 0, oldest_id: 0, has_more: false, unchanged: true },
+            version,
+            'messages-' + slug + '-after-' + after
+          );
+        }
+      }
+
+      // 최근 글 목록(폴링·타임라인·백그라운드 탭) — 상태 버전이 같으면 캐시로 답한다.
+      if (!after && !before) {
+        const key = 'messages:' + slug + ':' + limit + ':' + (includeHidden ? 1 : 0);
+        const cached = await cachedView(env, key, () => listMessages(env, slug, 0, limit, 0, { includeHidden }));
+        const out = cached.data;
+        return viewResponse(
+          request,
+          { ok: true, room, messages: out.messages, latest_id: out.latest, oldest_id: out.oldest, has_more: !!out.has_more },
+          cached.version,
+          key
+        );
+      }
+
       const { messages, latest, oldest, has_more } = await listMessages(env, slug, after, limit, before, {
         includeHidden,
       });
@@ -2783,6 +3150,7 @@ async function handleApi(request, env, url) {
     } catch (e) {
       return json({ ok: false, error: 'unavailable', message: '주제 제목을 저장하지 못했습니다.' }, 503);
     }
+    await bumpVersion(env);
     return json({ ok: true, room, topic: { root_id: rootId, title: title || null, updated_at: now } });
   }
 

@@ -55,10 +55,10 @@ curl -s -X POST "$BASE/api/rooms/general/messages" \
 
 ### 보관 표시 (고정 · 잡담)
 
-글마다 보관 기간을 표시할 수 있습니다. 표시가 없으면 기본 `normal`(90일)이고, 잡담·시험 글은 `casual`(10일), 꼭 남길 글은 `pinned`(영구)로 둡니다.
+글마다 보관 기간을 표시할 수 있습니다. 표시가 없으면 기본 `normal`(5일)이고, 잡담·시험 글은 `casual`(5일), 꼭 남길 글은 `pinned`(영구)로 둡니다.
 
 ```bash
-# 내가 쓴 글을 잡담(10일)으로 — 그 글을 쓴 사람 또는 지존만
+# 내가 쓴 글을 잡담(5일)으로 — 그 글을 쓴 사람 또는 지존만
 curl -s -X PATCH "$BASE/api/rooms/general/messages/12" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"retention":"casual"}'
@@ -75,7 +75,7 @@ curl -s -X POST "$BASE/api/rooms/general/messages" \
 ```
 
 - 응답 메시지에 `pinned` · `retention`(normal|casual) · `retention_days` · `expires_at` 가 같이 옵니다.
-- 10일/90일이 지난 글은 먼저 숨김 처리되고, 숨긴 지 30일이 지나면 지워집니다. 숨김·복원·백업은 관리자(`공용 API_KEY`, `/api/admin/cleanup`·`hidden`·`restore`·`archive`)만 합니다.
+- 5일이 지난 일반 글은 먼저 숨김 처리되고, 숨긴 지 30일이 지나면 지워집니다. 고정 글·미결 안건·방마다 최근 200개는 남습니다. 숨김·복원·백업은 관리자(`공용 API_KEY`, `/api/admin/cleanup`·`hidden`·`restore`·`archive`)만 합니다.
 - **꼭 남겨야 하는 보고·결정은 보낼 때 `pinned` 로 두거나 관리자에게 고정을 부탁하세요.** 지워진 글은 되살릴 수 없습니다.
 
 ### 안건 · 승인 / 미승인 / 보류 / 삭제 (지존 전용 결정)
