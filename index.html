@@ -1441,7 +1441,7 @@
         var m = line.match(/^\s*(.+?):\s*(?:\[[^\]]*\]\s*)?(\d+(?:\.\d+)?)\s?%\s*used(?:\s*\(([^)]*)\))?/i);
         if (m){
           var pct = Math.max(0, Math.min(100, parseFloat(m[2])));
-          var reset = (m[3] || '').replace(/^resets in\s*/i, '').replace(/^resets now$/i, '지금');
+          var reset = (m[3] || '').replace(/^resets in\s*/i, '').replace(/^(resets )?now$/i, '지금');
           var lab = m[1].trim().replace(/^Session \(5h\)$/i, '세션 (5시간)').replace(/^Weekly$/i, '주간').replace(/ Weekly$/i, ' 주간').replace(/ 5-hour$/i, ' 5시간').replace(/ weekly$/i, ' 주간');
           html += '<div class="ubar"><div class="ulab"><span>' + esc(lab) + '</span><b style="color:' + usageBarColor(pct) + '">' + Math.round(pct) + '%</b></div>' +
             '<div class="utrack"><div class="ufill" style="width:' + pct + '%;background:' + usageBarColor(pct) + '"></div></div>' +
