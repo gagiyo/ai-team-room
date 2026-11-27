@@ -889,8 +889,13 @@
     var method = opts.method || 'GET';
     var headers = Object.assign({'X-Room-Key': state.key}, opts.headers || {});
     if (opts.body) headers['Content-Type'] = 'application/json';
-    if (method === 'GET' && opts.etag && state.etags[path]) headers['If-None-Match'] = state.etags[path];
-    return fetch(path, {method: method, headers: headers, body: opts.body, cache:'no-store'})
+    var conditional = !!(opts.etag && state.etags[path]);
+    if (conditional) headers['If-None-Match'] = state.etags[path];
+    var init = {method: method, headers: headers, body: opts.body};
+    // ETag 를 보낼 때는 cache:'no-store' 를 쓰지 않는다 — 브라우저가 그 모드에서 조건부 헤더를 떼어 버린다.
+    // 응답 자체가 cache-control: no-store 라서 본문은 어차피 저장되지 않는다.
+    if (!(method === 'GET' && opts.etag)) init.cache = 'no-store';
+    return fetch(path, init)
       .then(function(res){
         // 304 — 바뀐 게 없다. 본문을 읽지 않고 그대로 넘어간다.
         if (res.status === 304) return {ok:true, not_modified:true};
