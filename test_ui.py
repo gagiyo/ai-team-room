@@ -109,8 +109,8 @@ var dst = newMessagesOnly(src);
 ok('dedupe: 원본 목록 불변', src.length === 2 && dst.length === 2 && src !== dst, 'src ' + src.length);
 
 // ---------------- 프로젝트 목록 · 분류 ----------------
-ok('project: 설정 순서 그대로 4개',
-   JSON.stringify(projectNames()) === JSON.stringify(['무림AI방','사이즈핏','스크랩박스','브랜드커넥트']),
+ok('project: 설정 순서 그대로 5개',
+   JSON.stringify(projectNames()) === JSON.stringify(['무림AI방','사이즈핏','스크랩박스','브랜드커넥트','호스텔']),
    JSON.stringify(projectNames()));
 // v1.11.1 — 묶음은 3개 그대로 두고 소속만 옮겼다(빈 묶음은 화면에서 건너뛴다)
 ok('project: 분류 묶음 3개 유지',
@@ -118,8 +118,8 @@ ok('project: 분류 묶음 3개 유지',
    JSON.stringify(PROJECTS.map(function(g){ return g.grp; })));
 ok('project: 사이즈핏·스크랩박스는 완료·수정 중',
    JSON.stringify(PROJECTS[0].names) === JSON.stringify(['무림AI방','사이즈핏','스크랩박스']) &&
-   PROJECTS[1].names.length === 0 &&
-   JSON.stringify(PROJECTS[2].names) === JSON.stringify(['브랜드커넥트']),
+   JSON.stringify(PROJECTS[1].names) === JSON.stringify(['브랜드커넥트']) &&
+   JSON.stringify(PROJECTS[2].names) === JSON.stringify(['호스텔']),
    JSON.stringify(PROJECTS));
 ok('project: 이름이 글에 있으면 그 프로젝트', projectOf({content:'사이즈핏 배포 끝났습니다'}) === '사이즈핏', projectOf({content:'사이즈핏 배포 끝났습니다'}));
 ok('project: 별칭 size-fit 매칭', projectOf({content:'size-fit v2 라이브 확인'}) === '사이즈핏', projectOf({content:'size-fit v2 라이브 확인'}));
@@ -208,7 +208,7 @@ source_checks = [
     ("brand: 모바일 제목 버튼", has('id="brandHomeMobile"')),
     # v1.11.0 — 개발 방 프로젝트 목록
     ("projects: 설정 한 곳", has("var PROJECTS = [") and has("var PROJECT_ALIASES = {")),
-    ("projects: 개발 방 아래 렌더", has("if (r.slug === PROJECT_ROOM) html += projectsHtml();")),
+    ("projects: 개발 방 아래 렌더", has("if (r.slug === PROJECT_ROOM && devOpen()) html += projectsHtml();")),
     ("projects: 화면에서만 거름", has("function matchProject") and has("state.messages.filter(matchFilter)")),
     ("projects: 고른 값 기억", has("localStorage.setItem(PROJECT_KEY") and has("localStorage.getItem(PROJECT_KEY)")),
     ("projects: 필터 칩", has('id="fProject"')),
