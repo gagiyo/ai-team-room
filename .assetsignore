@@ -17,6 +17,8 @@ LICENSE
 .assetsignore
 examples
 scripts
+__pycache__
+test_ui.py
 
 # GitHub Pages 용 소개 페이지 (docs/index.html, og.png)
 # → 앱을 Cloudflare Pages 로 배포할 때는 이 폴더를 올리지 않습니다.

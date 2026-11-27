@@ -51,11 +51,16 @@
  *  - 목록·멤버·안건·최근 글 응답에 ETag 를 붙이고 If-None-Match 에 304 로 답한다(화면은 본문 없이 넘어간다).
  *  - ensure*Schema 는 isolate 당 한 번만 돈다(WeakMap 플래그). 인덱스 idx_messages_room·idx_messages_sender_id·
  *    idx_messages_room_agenda 를 없으면 만든다.
+ *
+ * 2026-11-27 중복 글 표시 수정 (지존 신고, v1.10.1)
+ *  - 화면(index.html): 새 글을 붙일 때 이미 목록·화면에 있는 id 는 버린다(폴링 응답과 전송 응답이 엇갈려도 한 번만).
+ *  - 화면: 전송 중(sending)에는 Enter 연타·자동 반복(e.repeat)·버튼 중복 클릭으로 다시 보내지 않는다.
+ *  - 서버 API 는 그대로 — 중복 글은 화면에서 생기던 것이므로 idempotency 키 같은 규약은 더하지 않았다.
  */
 
 const SERVER_NAME = 'ai-team-room';
 const SERVER_TITLE = 'AI 팀 회의실';
-const SERVER_VERSION = '1.10.0'; // 2026-11-27 D1 읽기 최적화(상태 버전·isolate 캐시·ETag) + 보관 5일·최근 200개
+const SERVER_VERSION = '1.10.1'; // 2026-11-27 중복 글 표시 수정(화면 dedupe·전송 중 Enter 차단) + D1 읽기 최적화 + 보관 5일·최근 200개
 
 // 사람(최종 결정) — AI 숫자 집계에서 뺀다.
 const HUMAN_NAME = '지존';

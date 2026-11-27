@@ -756,6 +756,8 @@
     replyTo: null,
     timer: null,
     loading: false,
+    /* 전송 중 — 응답이 올 때까지 Enter 연타·버튼 중복 클릭을 막는다 */
+    sending: false,
     hasMore: false,
     loadingOlder: false,
     hiddenCount: 0,
@@ -1916,7 +1918,24 @@
     if (Date.now() < (state.suppressOlder || 0)) return;
     if (elMessages.scrollTop < 40) loadOlder();
   });
+  /* 새로 붙일 글 중 이미 화면(또는 state.messages)에 있는 id 는 버린다.
+     폴링 응답이 전송 응답보다 늦게 도착하는 식으로 엇갈려도 같은 글이 두 번 붙지 않는다(중복 글 버그). */
+  function newMessagesOnly(list){
+    var have = {};
+    state.messages.forEach(function(m){ if (m && m.id != null) have[m.id] = 1; });
+    // 목록과 화면이 어긋났을 때를 대비해 DOM 의 data-id 도 함께 본다
+    var nodes = elMessages.querySelectorAll('[data-id]');
+    Array.prototype.forEach.call(nodes, function(el){ have[el.getAttribute('data-id')] = 1; });
+    var out = [];
+    (list || []).forEach(function(m){
+      if (!m || m.id == null || have[m.id]) return;
+      have[m.id] = 1;
+      out.push(m);
+    });
+    return out;
+  }
   function appendMessages(list){
+    list = newMessagesOnly(list);
     if (!list.length) return;
     if (document.hidden) state.hiddenCount += list.length;
     var stick = nearBottom();
@@ -1941,6 +1960,8 @@
     if (femptyEl) femptyEl.remove();
     elMessages.insertAdjacentHTML('beforeend', html);
     state.messages = state.messages.concat(list);
+    // 붙인 글의 가장 큰 id 까지 커서를 당겨 둔다 — 직후 폴링이 같은 글을 다시 물어오지 않게
+    list.forEach(function(m){ if (m.id > state.lastId) state.lastId = m.id; });
     if (stick) scrollBottom(true);
     else { state.belowNew = (state.belowNew || 0) + list.length; updateLatestBtn(); }
     renderFilterBar();
@@ -1958,7 +1979,8 @@
         state.hasMore = !!d.has_more;
         renderAll();
       } else if (list.length){
-        state.lastId = list[list.length - 1].id;
+        // 커서는 뒤로 가지 않는다(늦게 도착한 폴링 응답이 이미 본 글을 다시 물어와도 그대로)
+        if (list[list.length - 1].id > state.lastId) state.lastId = list[list.length - 1].id;
         appendMessages(list);
       }
       // 방을 막 바꾼 직후 불러오기가 겹쳤어도, 어느 쪽이 끝나든 기다리던 글로 이동한다
@@ -2605,12 +2627,14 @@
 
   /* ---------- send ---------- */
   function send(){
+    if (state.sending) return; // 전송 중에는 Enter 연타·버튼 중복 클릭 모두 무시(같은 글이 두 번 올라가는 것 방지)
     var content = elInput.value.trim();
     if (!content && !state.attachment) return;
     var payload = {sender: state.sender, content: content};
     if (state.replyTo) payload.reply_to_id = state.replyTo.id;
     if (state.attachment) payload.attachment = state.attachment;
     if (state.agendaDraft) payload.agenda = true;
+    state.sending = true;
     elSend.disabled = true;
     api('/api/rooms/' + encodeURIComponent(state.room) + '/messages', {method:'POST', body: JSON.stringify(payload)})
       .then(function(d){
@@ -2634,7 +2658,7 @@
       .catch(function(err){
         setStatus(false, '전송 실패 · ' + (err.message || '다시 시도'));
       })
-      .then(function(){ elSend.disabled = false; elInput.focus(); });
+      .then(function(){ state.sending = false; elSend.disabled = false; elInput.focus(); });
   }
   elSend.addEventListener('click', send);
   elInput.addEventListener('keydown', function(e){
@@ -2664,6 +2688,8 @@
     }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing){
       e.preventDefault();
+      // 전송 응답 전의 연타, Enter 를 누르고 있을 때의 자동 반복(e.repeat)은 보내지 않는다
+      if (state.sending || e.repeat) return;
       send();
     }
   });

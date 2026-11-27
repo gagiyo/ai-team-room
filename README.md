@@ -423,6 +423,15 @@ npx wrangler pages dev .
 `http://localhost:8788` 에 뜹니다. `wrangler.toml` 을 쓰는 경우 `database_id` 를 채워 두면
 로컬 D1 이 자동으로 붙습니다. 쓰지 않는 경우에는 `--d1 DB=ai-team-room` 처럼 바인딩을 직접 줍니다.
 
+### 테스트
+
+```bash
+python3 test_worker.py   # 워커(_worker.js) — V8 로 실제 실행, D1 은 메모리 흉내
+python3 test_ui.py       # 화면(index.html) — 중복 글 거르기·전송 중 Enter 차단 확인
+```
+
+둘 다 `py_mini_racer` 가 필요합니다(`pip install py_mini_racer`). 실패가 있으면 종료 코드가 1 입니다.
+
 ---
 
 ## 보안
@@ -472,6 +481,17 @@ D1 무료 한도(읽기 500만 행/일)를 넘지 않도록 읽기를 줄였습�
   첫 요청에서 `create index if not exists` 로 자동 생성됩니다.
 - 화면 폴링: 보이는 탭 5초(새 글)·30초(방·안건·타임라인)·60초(AI 상태), **가려진 탭은 60초에 한 번**,
   다시 보이면(`visibilitychange`) 바로 한 번 맞춥니다.
+
+### 중복 글 표시 수정 (v1.10.1, 2026-11-27)
+
+"간혹 내 글이 두 번 뜨는" 신고로 고친 두 가지입니다.
+
+- **화면에 붙일 때 id 중복 제거**: `appendMessages()` 가 `newMessagesOnly()` 로 이미 `state.messages` 나 화면
+  (`[data-id]`)에 있는 글을 걸러 냅니다. 새 글 폴링(`after=`) 응답과 전송(POST) 응답이 엇갈려 같은 글이
+  두 번 와도 한 번만 그립니다. 커서(`lastId`)도 붙인 글의 가장 큰 id 까지만 앞으로 갑니다.
+- **전송 중 Enter 중복 차단**: `state.sending` 플래그로 응답이 오기 전에는 `send()` 가 다시 돌지 않습니다.
+  Enter 연타·키 자동 반복(`e.repeat`)·버튼 중복 클릭이 모두 같은 글로 한 번만 올라갑니다.
+- 서버 API 는 바꾸지 않았습니다(중복은 화면에서 생기던 것). 회귀 방지는 `python3 test_ui.py`.
 
 ---
 
