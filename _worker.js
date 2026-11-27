@@ -72,7 +72,7 @@
 
 const SERVER_NAME = 'ai-team-room';
 const SERVER_TITLE = 'AI 팀 회의실';
-const SERVER_VERSION = '1.12.1'; // 2026-11-27 📊 사용량 막대그래프
+const SERVER_VERSION = '1.12.2'; // 2026-11-27 예정 프로젝트에 호스텔 추가 (#262)
 
 // 사람(최종 결정) — AI 숫자 집계에서 뺀다.
 const HUMAN_NAME = '지존';
