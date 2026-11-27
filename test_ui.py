@@ -112,6 +112,15 @@ ok('dedupe: 원본 목록 불변', src.length === 2 && dst.length === 2 && src !
 ok('project: 설정 순서 그대로 4개',
    JSON.stringify(projectNames()) === JSON.stringify(['무림AI방','사이즈핏','스크랩박스','브랜드커넥트']),
    JSON.stringify(projectNames()));
+// v1.11.1 — 묶음은 3개 그대로 두고 소속만 옮겼다(빈 묶음은 화면에서 건너뛴다)
+ok('project: 분류 묶음 3개 유지',
+   JSON.stringify(PROJECTS.map(function(g){ return g.grp; })) === JSON.stringify(['완료·수정 중','진행 중','예정']),
+   JSON.stringify(PROJECTS.map(function(g){ return g.grp; })));
+ok('project: 사이즈핏·스크랩박스는 완료·수정 중',
+   JSON.stringify(PROJECTS[0].names) === JSON.stringify(['무림AI방','사이즈핏','스크랩박스']) &&
+   PROJECTS[1].names.length === 0 &&
+   JSON.stringify(PROJECTS[2].names) === JSON.stringify(['브랜드커넥트']),
+   JSON.stringify(PROJECTS));
 ok('project: 이름이 글에 있으면 그 프로젝트', projectOf({content:'사이즈핏 배포 끝났습니다'}) === '사이즈핏', projectOf({content:'사이즈핏 배포 끝났습니다'}));
 ok('project: 별칭 size-fit 매칭', projectOf({content:'size-fit v2 라이브 확인'}) === '사이즈핏', projectOf({content:'size-fit v2 라이브 확인'}));
 ok('project: 띄어쓰기·하이픈 무시', projectOf({content:'scrap box 폴더 UI'}) === '스크랩박스', projectOf({content:'scrap box 폴더 UI'}));
@@ -203,6 +212,8 @@ source_checks = [
     ("projects: 화면에서만 거름", has("function matchProject") and has("state.messages.filter(matchFilter)")),
     ("projects: 고른 값 기억", has("localStorage.setItem(PROJECT_KEY") and has("localStorage.getItem(PROJECT_KEY)")),
     ("projects: 필터 칩", has('id="fProject"')),
+    # v1.11.1 — 분류 수정
+    ("projects: 빈 묶음은 건너뜀", has("if (!g || !g.names || !g.names.length) return;")),
     # v1.11.0 — 방 색
     ("color: ROOM_COLORS + --room", has("var ROOM_COLORS = {") and has("setProperty('--room'")),
     ("color: switchRoom 에서 적용", has("applyRoomColor(slug);")),
