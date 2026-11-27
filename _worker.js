@@ -72,7 +72,7 @@
 
 const SERVER_NAME = 'ai-team-room';
 const SERVER_TITLE = 'AI 팀 회의실';
-const SERVER_VERSION = '1.11.3'; // 2026-11-27 회의실 색 B안(굵은 띠·색 이름표) (#251)
+const SERVER_VERSION = '1.12.0'; // 2026-11-27 AI 사용량 PC+웹 연동 (/api/usage, 📊 사용량, tools/usage-*.ps1)
 
 // 사람(최종 결정) — AI 숫자 집계에서 뺀다.
 const HUMAN_NAME = '지존';
@@ -545,6 +545,13 @@ function ensureAuthTables(env) {
          v integer not null default 0
        )`,
       // 주제별 대화 목록(2026-11-26 추가) — 주제는 화면이 답글 연결로 묶고, 여기에는 지존이 고친 제목만 둔다.
+      // AI 사용량 (2026-11-27) — 지존 PC의 사용량 보고 스크립트가 올린 스냅숏. 최근 것만 남긴다.
+      `create table if not exists usage_snapshots (
+         id integer primary key autoincrement,
+         created_at text not null,
+         host text,
+         payload text not null
+       )`,
       `create table if not exists topics (
          room_slug text not null,
          root_id integer not null,
@@ -3111,6 +3118,64 @@ async function handleApi(request, env, url) {
       updated = out.message;
     }
     return json({ ok: true, room, message: updated });
+  }
+
+  // GET /api/usage — 최근 AI 사용량 스냅숏 · POST /api/usage — 지존 PC 스크립트가 올림(지존 키만)
+  if (parts[1] === 'usage' && parts.length === 2) {
+    await ensureAuthTables(env);
+    if (method === 'GET') {
+      let rows = [];
+      try {
+        const r = await env.DB.prepare('select id, created_at, host, payload from usage_snapshots order by id desc limit 12').all();
+        rows = (r && r.results) || [];
+      } catch (e) {
+        rows = [];
+      }
+      const snaps = rows.map((row) => {
+        let data = null;
+        try {
+          data = JSON.parse(row.payload);
+        } catch (e) {
+          data = { text: String(row.payload || '') };
+        }
+        return { id: row.id, created_at: row.created_at, host: row.host || null, data };
+      });
+      return json({ ok: true, latest: snaps[0] || null, history: snaps.slice(1).map((x) => ({ id: x.id, created_at: x.created_at })) });
+    }
+    if (method !== 'POST') return json({ ok: false, error: 'method_not_allowed' }, 405, { allow: 'GET, POST, OPTIONS' });
+    if (!isSovereign(principal)) {
+      return json({ ok: false, error: 'forbidden', message: '사용량은 지존 키로만 올릴 수 있습니다.' }, 403);
+    }
+    if (await overLimit(env, 'usage:' + clientIp(request), 30, 3600)) {
+      return json({ ok: false, error: 'rate_limited', message: '사용량 보고가 너무 잦습니다.' }, 429, { 'retry-after': '600' });
+    }
+    let body = {};
+    try {
+      body = (await request.json()) || {};
+    } catch (e) {
+      return json({ ok: false, error: 'invalid_json' }, 400);
+    }
+    const text = String(body.text == null ? '' : body.text).slice(0, 20000);
+    let providers = null;
+    if (body.json != null) {
+      try {
+        providers = typeof body.json === 'string' ? JSON.parse(body.json) : body.json;
+      } catch (e) {
+        providers = null;
+      }
+    }
+    if (!text && providers == null) return json({ ok: false, error: 'empty', message: 'text 또는 json 이 필요합니다.' }, 400);
+    const payload = JSON.stringify({ text, json: providers, tool: String(body.tool || '').slice(0, 80) });
+    if (payload.length > 200000) return json({ ok: false, error: 'too_large' }, 413);
+    const now = new Date().toISOString();
+    const host = String(body.host || '').slice(0, 60) || null;
+    try {
+      await env.DB.prepare('insert into usage_snapshots (created_at, host, payload) values (?, ?, ?)').bind(now, host, payload).run();
+      await env.DB.prepare('delete from usage_snapshots where id not in (select id from usage_snapshots order by id desc limit 48)').run();
+    } catch (e) {
+      return json({ ok: false, error: 'unavailable', message: '사용량을 저장하지 못했습니다.' }, 503);
+    }
+    return json({ ok: true, created_at: now });
   }
 
   // GET /api/rooms/:slug/topics — 지존이 고친 주제 제목 목록 · POST /api/rooms/:slug/topics/:rootId — 제목 고치기(지존만, 빈 제목은 자동 제목으로 되돌림)
