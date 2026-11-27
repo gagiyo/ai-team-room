@@ -8,8 +8,9 @@ $Dir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Push = Join-Path $Dir 'usage-push.ps1'
 if (-not (Test-Path $Push)) { throw "같은 폴더에 usage-push.ps1 이 있어야 합니다." }
 
-Write-Host "무림AI방 입장 키를 입력하세요 (화면에 보이지 않습니다):"
-$sec = Read-Host -AsSecureString
+Write-Host ""
+Write-Host "[1/3] 무림AI방 입장 키를 붙여 넣고 Enter (입력한 글자는 화면에 안 보이는 게 정상입니다)" -ForegroundColor Yellow
+$sec = Read-Host -AsSecureString -Prompt "입장 키"
 $sec | ConvertFrom-SecureString | Set-Content -Path (Join-Path $Dir 'usage-push.key') -Encoding UTF8
 Write-Host "키를 저장했습니다 (이 PC·이 계정에서만 풀림)."
 
