@@ -1550,7 +1550,7 @@
       // 방 이름·설명은 방을 바꿀 때마다 지금 방 기준으로 다시 칠한다(304 여도 마찬가지)
       var cur = (state.rooms || []).filter(function(r){ return r.slug === state.room; })[0];
       if (cur){
-        $('roomName').textContent = cur.slug;
+        $('roomName').textContent = cur.name || cur.slug; // B안 이름표 — 영문 slug 대신 방 이름
         $('roomDesc').textContent = cur.name + ' · ' + (cur.description || '');
       }
     });
