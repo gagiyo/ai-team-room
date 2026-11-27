@@ -423,7 +423,8 @@ async function bumpVersion(env) {
 // isolate(env) 별 메모리 캐시. key -> { v, at, data }
 const viewCaches = new WeakMap();
 const VIEW_CACHE_MAX = 160;
-const VIEW_CACHE_TTL_MS = 120000;
+// 버전이 같을 때만 캐시를 쓰므로 이 값은 '버전을 못 읽거나 못 올리는 예외 상황'의 최대 지연을 정한다(1분).
+const VIEW_CACHE_TTL_MS = 60000;
 
 function cacheOf(env) {
   let m = viewCaches.get(env);
