@@ -83,6 +83,8 @@
   .room.active{background:var(--accent-dim);color:#fff;box-shadow:inset 3px 0 0 var(--room)}
   .room .hash{color:var(--muted);font-size:14px}
   .room.active .hash{color:var(--room)}
+  .room .devchev{display:inline-block;font-size:9px;transition:transform .16s ease}
+  .room.devroom.open .devchev{transform:rotate(90deg)}
   .room .rtext{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}
   .room .rtop{display:flex;align-items:baseline;gap:5px;min-width:0}
   .room .rname{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -1489,6 +1491,9 @@
       }
     });
   })();
+  var DEV_OPEN_KEY = 'ai_team_room_dev_open';
+  function devOpen(){ try { return localStorage.getItem(DEV_OPEN_KEY) === '1'; } catch(e){ return false; } }
+  function setDevOpen(v){ try { localStorage.setItem(DEV_OPEN_KEY, v ? '1' : '0'); } catch(e){} }
   function renderRooms(){
     var html = '<div class="label">회의실</div>';
     state.rooms.forEach(function(r){
@@ -1500,20 +1505,29 @@
       }
       // 마지막 글이 언제 올라왔는지 — 방 이름 옆에 회색 작은 글씨로 (없으면 '글 없음')
       var when = relTime(r.last_message_at, '글 없음');
-      html += '<button class="room' + (r.slug === state.room ? ' active' : '') + '" data-room="' + esc(r.slug) + '">' +
-        '<span class="hash">#</span>' +
+      var isDev = r.slug === PROJECT_ROOM;
+      html += '<button class="room' + (r.slug === state.room ? ' active' : '') + (isDev ? ' devroom' + (devOpen() ? ' open' : '') : '') + '" data-room="' + esc(r.slug) + '"' +
+        (isDev ? ' aria-expanded="' + (devOpen() ? 'true' : 'false') + '" title="눌러서 프로젝트 목록 ' + (devOpen() ? '접기' : '펼치기') + '"' : '') + '>' +
+        '<span class="hash">' + (isDev ? '<span class="devchev">▶</span>' : '#') + '</span>' +
         '<span class="rtext"><span class="rtop"><span class="rname">' + esc(r.name) + '</span>' +
         '<span class="rtime">' + esc(when) + '</span></span>' +
         '<span class="rdesc">' + esc(r.description || '') + '</span></span>' +
         badge + '</button>';
-      // '개발' 방 아래에 프로젝트 목록을 펼쳐 둔다(전체 · 미분류 · 묶음별 프로젝트명)
-      if (r.slug === PROJECT_ROOM) html += projectsHtml();
+      // '개발' 방 아래 프로젝트 목록 — 개발을 누르면 열리고, 열린 채로 다시 누르면 접힌다
+      if (r.slug === PROJECT_ROOM && devOpen()) html += projectsHtml();
     });
     elRoomList.innerHTML = html;
     renderRoomBar();
     Array.prototype.forEach.call(elRoomList.querySelectorAll('.room'), function(btn){
       btn.addEventListener('click', function(){
-        switchRoom(btn.getAttribute('data-room'));
+        var slug = btn.getAttribute('data-room');
+        if (slug === PROJECT_ROOM){
+          // 개발: 다른 방에서 누르면 들어가며 펼치고, 이미 개발 방이면 목록만 접었다 폈다
+          var open = state.room === PROJECT_ROOM ? !devOpen() : true;
+          setDevOpen(open);
+          if (state.room === PROJECT_ROOM){ renderRooms(); return; }
+        }
+        switchRoom(slug);
       });
     });
     Array.prototype.forEach.call(elRoomList.querySelectorAll('[data-project]'), function(btn){
