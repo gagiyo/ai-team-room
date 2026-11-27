@@ -1703,6 +1703,29 @@
       state.suppressOlder = Date.now() + 1200;
     }
     updateOlderBar();
+    updateProjectCounts();
+  }
+  /* 개발 방 목록의 프로젝트별 건수 — 글을 불러온 뒤·새 글이 붙은 뒤 숫자만 다시 맞춘다(목록을 다시 그리지 않는다) */
+  function updateProjectCounts(){
+    if (!elRoomList) return;
+    var box = elRoomList.querySelector('#projectList');
+    if (!box) return;
+    var counts = (state.room === PROJECT_ROOM) ? projectCounts(state.messages) : null;
+    Array.prototype.forEach.call(box.querySelectorAll('[data-project]'), function(btn){
+      var val = btn.getAttribute('data-project');
+      var n = counts ? (counts[val] || 0) : 0;
+      var span = btn.querySelector('.pcount');
+      if (!n){
+        if (span && span.parentNode) span.parentNode.removeChild(span);
+        return;
+      }
+      if (!span){
+        span = document.createElement('span');
+        span.className = 'pcount';
+        btn.appendChild(span);
+      }
+      span.textContent = String(n);
+    });
   }
   function updateOlderBar(){
     if (!elOlderBar) return;
