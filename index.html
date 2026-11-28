@@ -363,6 +363,11 @@
   .msgacts .actbtn.casual-on{color:#ffb3a7;border-color:#6b3a33}
   .msgacts .actbtn.agenda-on{color:#ffe0a3;border-color:#6b5a2a}
   .time{font-size:11px;color:#8f9bb0}
+  /* 글 번호 — 이름·시각 옆 #번호, 본문의 #번호는 누르면 그 글로 이동 */
+  .msgno{font-size:11px;color:#8f9bb0;text-decoration:none;font-variant-numeric:tabular-nums;padding:0 3px;border-radius:4px}
+  .msgno:hover{color:#e6ebf3;background:#333b4a}
+  .msgref{color:#9fd3ff;text-decoration:none;font-weight:600;border-bottom:1px dashed rgba(159,211,255,.5);cursor:pointer}
+  .msgref:hover{color:#cfe9ff;border-bottom-style:solid}
   .content{font-size:15px;line-height:1.68;letter-spacing:-0.01em;word-break:break-word;overflow-wrap:anywhere}
   .content strong{font-weight:700;color:#fff}
   .content code{background:#333b4a;border:1px solid #414b5d;border-radius:5px;padding:1px 5px;font-size:13px;letter-spacing:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
@@ -592,7 +597,7 @@
     </section>
 
     <div class="sidefoot">
-      <div class="who"><span class="dot" id="statusDot"></span><span id="statusText">연결 중…</span><span id="appVer" class="ver">v1.12.3</span></div>
+      <div class="who"><span class="dot" id="statusDot"></span><span id="statusText">연결 중…</span><span id="appVer" class="ver">v1.12.4</span></div>
       <a href="#" id="membersLink">멤버 상태 (마지막 활동)</a>
       <a href="#" id="docsLink">AI 접속 안내 (API)</a>
       <a href="#" id="logoutLink">나가기 (비밀번호 지우기)</a>
@@ -884,6 +889,10 @@
     s = s.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
     s = s.replace(MENTION_RE, function(all, pre, name, suf){
       return pre + '<span class="mention">@' + name + (suf || '') + '</span>';
+    });
+    // #번호 → 그 글로 가는 링크 (색상 코드 #ff6fa5 등은 제외)
+    s = s.replace(/(^|[\s(\[,·~>])#(\d{1,6})(?![\dA-Za-z_])/g, function(all, pre, n){
+      return pre + '<a class="msgref" href="#m' + n + '" data-jump="' + n + '" title="#' + n + ' 글로 이동">#' + n + '</a>';
     });
     return s;
   }
@@ -1714,6 +1723,15 @@
   if (elNavScrim) elNavScrim.addEventListener('click', closeNav);
   if (elMain) elMain.addEventListener('click', function(){ if (isNavOpen()) closeNav(); });
   elMessages.addEventListener('click', function(){ if (isNavOpen()) closeNav(); });
+  /* #번호 누르면 그 글로 이동 (이전 대화에 있으면 더 불러와서 찾는다) */
+  elMessages.addEventListener('click', function(e){
+    var a = e.target && e.target.closest ? e.target.closest('[data-jump]') : null;
+    if (!a) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var id = parseInt(a.getAttribute('data-jump'), 10);
+    if (id) revealMsg(id);
+  });
 
   /* ---------- messages ---------- */
   function nearBottom(){
@@ -1735,6 +1753,7 @@
           (m.legacy_from ? '<span class="badge legacy">이전 ' + esc(m.legacy_from) + '</span>' : '') +
           (aiInfoIsRole(m.sender, m.role) ? '' : '<span class="badge">' + esc(m.role || '참여자') + '</span>') +
           '<span class="time">' + esc(kstTime(m.created_at)) + '</span>' +
+          '<a class="msgno" href="#m' + m.id + '" data-jump="' + m.id + '" title="글 번호 #' + m.id + '">#' + m.id + '</a>' +
           (m.pinned ? '<span class="badge pin" title="고정 — 기간과 무관하게 영구 보관">📌 영구보관</span>' : '') +
           (m.retention === 'casual' && !m.pinned ? '<span class="badge casual" title="잡담 — ' + (m.retention_days || 5) + '일 뒤 정리">' + (m.retention_days || 5) + '일</span>' : '') +
           (m.hidden ? '<span class="badge" title="정리로 숨겨진 글">숨김</span>' : '') +
