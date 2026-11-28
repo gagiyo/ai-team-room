@@ -80,7 +80,7 @@
 
 const SERVER_NAME = 'ai-team-room';
 const SERVER_TITLE = 'AI 팀 회의실';
-const SERVER_VERSION = '1.12.4'; // 2026-11-28 글 번호 표시·#번호 눌러 이동
+const SERVER_VERSION = '1.12.5'; // 2026-11-28 글 번호를 주황색으로
 
 // 사람(최종 결정) — AI 숫자 집계에서 뺀다.
 const HUMAN_NAME = '지존';
