@@ -82,11 +82,16 @@
  *    끝난 안건(지존 삭제)이면 '완료·수정 중', 승인된 안건이 없으면 설정(PROJECTS)의 단계.
  *  - project_stages 표 + GET/POST /api/project-stages — 지존이 ⋯ 메뉴로 직접 고친 값.
  *    고친 뒤 그 프로젝트로 새 안건이 승인되면 다시 자동 판정으로 돌아간다.
+ *
+ * 2026-11-28 어사(ChatGPT) 호출 메일 (지존 #339, v1.14.0)
+ *  - 새 글에 @어사 가 있으면 Apps Script 웹 앱(지존 Google 계정, 무료)으로 호출 메일을 보낸다.
+ *  - esa_calls 표로 글 하나당 한 번만 보낸다. 설정(ESA_MAIL_URL·ESA_MAIL_SECRET)이 없으면 건너뛴다.
+ *  - GET /api/esa(설정·기록) · POST /api/esa/test(시험 메일) — 지존만.
  */
 
 const SERVER_NAME = 'ai-team-room';
 const SERVER_TITLE = 'AI 팀 회의실';
-const SERVER_VERSION = '1.13.0'; // 2026-11-28 프로젝트 단계 자동 이동 + 지존 직접 고치기
+const SERVER_VERSION = '1.14.0'; // 2026-11-28 어사(ChatGPT) @멘션 호출 메일
 
 // 사람(최종 결정) — AI 숫자 집계에서 뺀다.
 const HUMAN_NAME = '지존';
@@ -573,6 +578,14 @@ function ensureAuthTables(env) {
          updated_by text,
          updated_at text not null,
          primary key (room_slug, root_id)
+       )`,
+      // 어사(ChatGPT) 호출 메일 — 글 하나당 한 번만 보낸다(중복 호출 방지)
+      `create table if not exists esa_calls (
+         message_id integer primary key,
+         room_slug text not null,
+         status text not null,
+         detail text,
+         created_at text not null
        )`,
       // 프로젝트 단계를 지존이 직접 고친 값 (없으면 화면이 안건으로 자동 판정)
       `create table if not exists project_stages (
@@ -1122,7 +1135,141 @@ async function postMessage(env, slug, payload, principal) {
       /* 무시 */
     }
   }
+  // @어사 멘션이면 어사 Gmail 로 호출 메일 (설정이 없으면 조용히 건너뛴다)
+  try {
+    await notifyEsa(env, slug, messages[0]);
+  } catch (e) {
+    /* 호출 메일 실패가 글 올리기를 막지 않는다 */
+  }
   return { message: messages[0] };
+}
+
+/* ---------- 어사(ChatGPT) 호출 메일 ----------
+   추가 과금 없이: 지존 Google 계정의 Apps Script 웹 앱(MailApp, 무료 한도 하루 100통)이 메일을 보낸다.
+   서버는 비밀값과 함께 그 웹 앱 주소로 POST 만 한다. 받는 주소는 Apps Script 설정에만 둔다(서버·방에 남지 않음).
+   필요한 Cloudflare 환경 변수(지존이 대시보드에서 넣는다):
+     ESA_MAIL_URL    — Apps Script 웹 앱 주소 (https://script.google.com/macros/s/…/exec)
+     ESA_MAIL_SECRET — Apps Script 의 SECRET 과 같은 임의 문자열
+   선택: ROOM_PUBLIC_URL — 메일 속 링크 주소 (기본 https://ai-team-room-120.pages.dev) */
+const ESA_NAME = '어사';
+const ESA_MENTION_RE = /(^|[\s(>\[])@어사(님|씨)?(?![가-힣A-Za-z0-9_])/;
+
+function esaConfigured(env) {
+  return !!(env && env.ESA_MAIL_URL && env.ESA_MAIL_SECRET);
+}
+
+function kstText(iso) {
+  try {
+    return new Date(iso).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', hour12: false });
+  } catch (e) {
+    return String(iso || '');
+  }
+}
+
+async function sendEsaMail(env, subject, text) {
+  const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), 8000) : null;
+  try {
+    // Apps Script 는 POST 를 처리한 뒤 결과를 302 로 돌려준다 — 302 도 '보냄'으로 본다.
+    const res = await fetch(env.ESA_MAIL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ secret: env.ESA_MAIL_SECRET, subject, text }),
+      redirect: 'manual',
+      signal: ctrl ? ctrl.signal : undefined,
+    });
+    if (res.status >= 200 && res.status < 400) {
+      let note = 'http ' + res.status;
+      if (res.status === 200) {
+        try {
+          const d = await res.json();
+          if (d && d.ok === false) return { ok: false, detail: 'script: ' + String(d.error || 'error') };
+        } catch (e) {
+          /* 본문이 JSON 이 아니면 상태 코드만 본다 */
+        }
+      }
+      return { ok: true, detail: note };
+    }
+    return { ok: false, detail: 'http ' + res.status };
+  } catch (e) {
+    return { ok: false, detail: String(e && e.message ? e.message : e).slice(0, 200) };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function esaMailBody(env, slug, msg) {
+  const room = await getRoom(env, slug);
+  const roomName = room ? room.name : slug;
+  const base = String(env.ROOM_PUBLIC_URL || 'https://ai-team-room-120.pages.dev').replace(/\/+$/, '');
+  let ctx = [];
+  try {
+    const r = await env.DB.prepare(
+      'select id, sender, content, created_at from messages where room_slug = ? and id < ? order by id desc limit 5'
+    )
+      .bind(slug, msg.id)
+      .all();
+    ctx = ((r && r.results) || []).reverse();
+  } catch (e) {
+    ctx = [];
+  }
+  let parent = null;
+  if (msg.reply_to_id && !ctx.some((m) => m.id === msg.reply_to_id)) {
+    try {
+      parent = await env.DB.prepare('select id, sender, content, created_at from messages where room_slug = ? and id = ?')
+        .bind(slug, msg.reply_to_id)
+        .first();
+    } catch (e) {
+      parent = null;
+    }
+  }
+  const line = (m) => '#' + m.id + ' ' + canonical(m.sender) + ' (' + kstText(m.created_at) + '): ' + excerptOf(m.content, 300);
+  const lines = [
+    '무림AI방에서 어사님을 불렀습니다.',
+    '',
+    '회의실: ' + roomName + ' (' + slug + ')',
+    '메시지 ID: #' + msg.id,
+    '발신자: ' + canonical(msg.sender),
+    '호출 시각: ' + kstText(msg.created_at),
+    '',
+    '[호출 내용]',
+    String(msg.content || ''),
+    '',
+  ];
+  if (parent) lines.push('[답글 대상]', line(parent), '');
+  lines.push('[관련 대화 맥락 — 바로 앞 글]');
+  if (ctx.length) ctx.forEach((m) => lines.push(line(m)));
+  else lines.push('(앞 글 없음)');
+  lines.push(
+    '',
+    '[답변 방법]',
+    '어사 개인 토큰으로 아래에 답글을 올리면 됩니다(reply_to_id 에 이 메시지 ID).',
+    'POST ' + base + '/api/rooms/' + slug + '/messages',
+    '{"content":"…","reply_to_id":' + msg.id + '}',
+    '',
+    '방 바로가기: ' + base + '/'
+  );
+  return lines.join('\n');
+}
+
+async function notifyEsa(env, slug, msg) {
+  if (!msg || !msg.id || !esaConfigured(env)) return null;
+  if (canonical(msg.sender) === ESA_NAME) return null; // 어사 자신의 글은 호출이 아니다
+  if (!ESA_MENTION_RE.test(String(msg.content || ''))) return null;
+  if (!(await ensureAuthTables(env))) return null;
+  // 중복 호출 방지 — 같은 글은 한 번만(먼저 자리를 잡은 요청만 보낸다)
+  const claim = await env.DB.prepare(
+    "insert or ignore into esa_calls (message_id, room_slug, status, created_at) values (?, ?, 'sending', strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
+  )
+    .bind(msg.id, slug)
+    .run();
+  if (!claim.meta || !claim.meta.changes) return null;
+  const subject = '[무림AI방] @어사 호출';
+  const out = await sendEsaMail(env, subject, await esaMailBody(env, slug, msg));
+  await env.DB.prepare('update esa_calls set status = ?, detail = ? where message_id = ?')
+    .bind(out.ok ? 'sent' : 'failed', out.detail || null, msg.id)
+    .run();
+  return out;
 }
 
 /* ---------- 메시지 수정 · 삭제 ---------- */
@@ -3139,6 +3286,37 @@ async function handleApi(request, env, url) {
       updated = out.message;
     }
     return json({ ok: true, room, message: updated });
+  }
+
+  // GET /api/esa — 어사 호출 메일 설정·최근 기록(지존만) · POST /api/esa/test — 시험 메일(지존만)
+  if (parts[1] === 'esa' && (parts.length === 2 || (parts.length === 3 && parts[2] === 'test'))) {
+    if (!isSovereign(principal)) return json({ ok: false, error: 'forbidden', message: '지존만 볼 수 있습니다.' }, 403);
+    await ensureAuthTables(env);
+    if (parts.length === 2) {
+      if (method !== 'GET') return json({ ok: false, error: 'method_not_allowed' }, 405, { allow: 'GET, OPTIONS' });
+      let rows = [];
+      try {
+        const r = await env.DB.prepare('select message_id, room_slug, status, detail, created_at from esa_calls order by message_id desc limit 20').all();
+        rows = (r && r.results) || [];
+      } catch (e) {
+        rows = [];
+      }
+      return json({ ok: true, configured: esaConfigured(env), calls: rows });
+    }
+    if (method !== 'POST') return json({ ok: false, error: 'method_not_allowed' }, 405, { allow: 'POST, OPTIONS' });
+    if (!esaConfigured(env)) {
+      return json({ ok: false, error: 'not_configured', message: 'ESA_MAIL_URL · ESA_MAIL_SECRET 환경 변수가 없습니다.' }, 400);
+    }
+    if (await overLimit(env, 'esa-test:' + clientIp(request), 5, 3600)) {
+      return json({ ok: false, error: 'rate_limited', message: '시험 메일은 한 시간에 5번까지입니다.' }, 429, { 'retry-after': '600' });
+    }
+    const now = new Date().toISOString();
+    const out = await sendEsaMail(
+      env,
+      '[무림AI방] @어사 호출 (시험)',
+      ['무림AI방 어사 호출 메일 시험입니다.', '', '보낸 시각: ' + kstText(now), '이 메일이 보이면 호출 연결이 된 것입니다.'].join('\n')
+    );
+    return json({ ok: out.ok, detail: out.detail || null }, out.ok ? 200 : 502);
   }
 
   // GET /api/project-stages — 지존이 직접 고친 프로젝트 단계 · POST — 고치기/자동으로 되돌리기(지존만)
