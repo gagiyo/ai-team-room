@@ -132,6 +132,23 @@
   .projrow .pname{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .projrow .pcount{margin-left:auto;flex:0 0 auto;font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums}
   .projrow.on .pcount{color:#dfe8f6}
+  /* 프로젝트 단계 — 자동(초록)·지존이 직접 고침(주황) 표시와 ⋯ 메뉴 (#330 2번안 · A안) */
+  .projitem{position:relative;display:flex;align-items:center}
+  .projitem .projrow{flex:1 1 auto;min-width:0}
+  .projitem.has-more .projrow{padding-right:22px}
+  .projrow .ptag{flex:0 0 auto;font-size:9.5px;font-weight:700;border-radius:5px;padding:0 4px;line-height:1.5}
+  .projrow .ptag.auto{color:#7bd88f;background:rgba(123,216,143,.12)}
+  .projrow .ptag.hand{color:#ff9f43;background:rgba(255,159,67,.14)}
+  .pmore{position:absolute;right:2px;top:50%;transform:translateY(-50%);border:0;background:transparent;color:#8f9bb0;font-size:12px;line-height:1;padding:3px 4px;border-radius:5px;cursor:pointer}
+  .pmore:hover,.pmore[aria-expanded="true"]{background:#333b4a;color:#fff}
+  .pmenu{position:fixed;z-index:60;background:#1d232e;border:1px solid #3a4354;border-radius:10px;padding:5px;width:178px;box-shadow:0 8px 24px rgba(0,0,0,.45)}
+  .pmenu[hidden]{display:none}
+  .pmenu .ph{font-size:10.5px;color:#8f9bb0;padding:3px 7px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pmenu button{display:block;width:100%;text-align:left;border:0;background:transparent;color:#dfe6f0;font-size:12px;padding:5px 7px;border-radius:6px;cursor:pointer}
+  .pmenu button:hover{background:#2b3240}
+  .pmenu button.on::after{content:" ✓";color:#7bd88f}
+  .pmenu .psep{height:1px;background:#2f3746;margin:4px 2px}
+  .pmenu .pwhy{font-size:10.5px;color:#8f9bb0;padding:4px 7px 2px;line-height:1.45}
 
   /* ---------- 왼쪽 프레임: 안건 · 미결정 요약 ---------- */
   .agendas{flex:0 1 auto;display:flex;flex-direction:column;min-height:0;max-height:38vh;border-top:1px solid var(--line);padding-top:10px;gap:6px}
@@ -597,7 +614,7 @@
     </section>
 
     <div class="sidefoot">
-      <div class="who"><span class="dot" id="statusDot"></span><span id="statusText">연결 중…</span><span id="appVer" class="ver">v1.12.5</span></div>
+      <div class="who"><span class="dot" id="statusDot"></span><span id="statusText">연결 중…</span><span id="appVer" class="ver">v1.13.0</span></div>
       <a href="#" id="membersLink">멤버 상태 (마지막 활동)</a>
       <a href="#" id="docsLink">AI 접속 안내 (API)</a>
       <a href="#" id="logoutLink">나가기 (비밀번호 지우기)</a>
@@ -775,7 +792,9 @@
 
   /* ---------- 프로젝트 목록 — 설정은 이 한 곳 ----------
      이름만 names 에 더하면 '개발' 방 아래 목록에 바로 붙고 필터에도 바로 쓸 수 있다.
-     grp 는 화면에 보이는 순서 그대로다. 서버·DB 는 건드리지 않고 글 본문에서만 찾는다. */
+     grp 는 그 프로젝트의 '기본 단계'다 — 승인된 안건이 없을 때 이 단계에 놓인다.
+     승인된 안건이 생기면 화면이 자동으로 진행 중 · 완료·수정 중으로 옮긴다(projectStageInfo).
+     지존이 ⋯ 메뉴로 직접 고친 값은 서버 project_stages 에 저장된다. */
   var PROJECTS = [
     {grp:'완료·수정 중', names:['무림AI방','사이즈핏','스크랩박스']},
     {grp:'진행 중', names:['브랜드커넥트']},
@@ -824,6 +843,7 @@
     /* ETag — 같은 경로·같은 조건의 응답이 그대로이면 서버가 304 로 답한다 */
     etags: {},
     canApprove: false,
+    projectStages: {}, // 지존이 직접 고친 프로젝트 단계 — 이름 → {stage, set_at, set_by}
     agendas: [],
     agendaCounts: {approved:0, rejected:0, held:0, deleted:0},
     agendaAlarms: 0,
@@ -1234,31 +1254,159 @@
       ? '모든 글로 돌아왔습니다'
       : ('프로젝트 「' + projectLabel() + '」 글만 · ' + n + '건'));
   }
-  /* 개발 방 아래에 붙는 목록 — 전체 · 미분류 · 묶음 제목 · 프로젝트명 */
+  /* ---------- 프로젝트 단계 (자동 이동 + 지존 직접 고치기) ----------
+     안건 본문(요약)에 프로젝트 이름·별칭이 있으면 그 프로젝트 안건으로 본다.
+     · 승인된 안건이 남아 있으면 '진행 중'
+     · 승인됐던 안건이 모두 끝난 안건(지존 삭제)이면 '완료·수정 중'
+     · 승인된 안건이 없으면 설정(PROJECTS)에 적어 둔 단계
+     지존이 ⋯ 메뉴로 고친 값은 서버(project_stages)에 저장되고, 고친 뒤 그 프로젝트로
+     새 안건이 승인되면 다시 자동 판정으로 돌아간다. */
+  var STAGE_ORDER = ['완료·수정 중', '진행 중', '예정'];
+  function projectBaseStage(name){
+    var base = '예정';
+    (PROJECTS || []).forEach(function(g){
+      if (g && g.names && g.names.indexOf(name) >= 0) base = g.grp || base;
+    });
+    return STAGE_ORDER.indexOf(base) >= 0 ? base : '예정';
+  }
+  function projectStageInfo(name){
+    var open = [], done = [], lastApproved = '';
+    (state.agendas || []).forEach(function(a){
+      if (!a || !a.approved_at) return;
+      if (projectOf({content: a.excerpt || ''}) !== name) return;
+      if (a.decision === 'approved') open.push(a);
+      else if (a.decision === 'deleted') done.push(a);
+      else return;
+      if (a.approved_at > lastApproved) lastApproved = a.approved_at;
+    });
+    function no(a){ return a.agenda_no ? '안건 ' + a.agenda_no + '번' : '#' + a.id; }
+    var auto, why;
+    if (open.length){
+      auto = '진행 중';
+      why = '승인된 안건 ' + (open.length + done.length) + '건 중 ' + open.length + '건 진행 중 (' + open.slice(0, 3).map(no).join(', ') + ')';
+    } else if (done.length){
+      auto = '완료·수정 중';
+      why = '승인됐던 안건 ' + done.length + '건이 모두 끝남';
+    } else {
+      auto = projectBaseStage(name);
+      why = '승인된 안건 없음 — 기본 단계';
+    }
+    var ov = state.projectStages && state.projectStages[name];
+    if (ov && ov.stage && STAGE_ORDER.indexOf(ov.stage) >= 0 && !(lastApproved && ov.set_at && lastApproved > ov.set_at)){
+      return {stage: ov.stage, mode: 'hand', auto: auto,
+        why: '지존이 직접 고침 · ' + kstFull(ov.set_at) + ' — 이 프로젝트로 새 안건이 승인되면 자동으로 돌아갑니다 (자동 판정: ' + auto + ')'};
+    }
+    return {stage: auto, mode: 'auto', auto: auto, why: why};
+  }
+  function loadProjectStages(){
+    return api('/api/project-stages', {etag:true}).then(function(d){
+      if (!d || d.not_modified) return;
+      var map = {};
+      (d.stages || []).forEach(function(r){ if (r && r.name) map[r.name] = r; });
+      state.projectStages = map;
+      if (devOpen()) renderRooms();
+    }).catch(function(){});
+  }
+  /* 개발 방 아래에 붙는 목록 — 전체 · 미분류 · 단계 제목 · 프로젝트명 */
   function projectsHtml(){
     var cur = state.projectFilter || PROJECT_ALL;
     var inDev = state.room === PROJECT_ROOM;
     var counts = inDev ? projectCounts(state.messages) : null;
-    function row(val, label, mark, tip){
+    function row(val, label, mark, tip, info){
       var on = inDev && cur === val;
       var n = counts ? counts[val] : null;
-      return '<button type="button" class="projrow' + (on ? ' on' : '') + '" data-project="' + esc(val) + '"' +
+      var btn = '<button type="button" class="projrow' + (on ? ' on' : '') + '" data-project="' + esc(val) + '"' +
         ' aria-pressed="' + (on ? 'true' : 'false') + '" title="' + esc(tip) + '">' +
         '<span class="pmk" aria-hidden="true">' + mark + '</span>' +
         '<span class="pname">' + esc(label) + '</span>' +
+        (info ? '<span class="ptag ' + info.mode + '">' + (info.mode === 'hand' ? '직접' : '자동') + '</span>' : '') +
         (n ? '<span class="pcount">' + n + '</span>' : '') + '</button>';
+      if (!info) return btn;
+      var more = state.canApprove
+        ? '<button type="button" class="pmore" data-pmore="' + esc(val) + '" aria-haspopup="menu" aria-expanded="false" title="' + esc(label) + ' 단계 바꾸기">⋯</button>'
+        : '';
+      return '<div class="projitem' + (more ? ' has-more' : '') + '">' + btn + more + '</div>';
     }
     var html = '<div class="projects" id="projectList" role="group" aria-label="프로젝트">' +
       row(PROJECT_ALL, '전체', '◎', '개발 방의 모든 글') +
       row(PROJECT_NONE, '미분류', '·', '어느 프로젝트 이름에도 안 걸린 글');
-    (PROJECTS || []).forEach(function(g){
-      if (!g || !g.names || !g.names.length) return; // 빈 묶음은 제목만 남기지 않고 건너뛴다
-      html += '<div class="projgrp">' + esc(g.grp || '') + '</div>';
-      (g.names || []).forEach(function(name){
-        html += row(name, name, '◇', name + ' — 이 프로젝트 이야기만 보기');
+    var byStage = {};
+    projectNames().forEach(function(name){
+      var info = projectStageInfo(name);
+      (byStage[info.stage] = byStage[info.stage] || []).push({name: name, info: info});
+    });
+    STAGE_ORDER.forEach(function(stage){
+      var list = byStage[stage];
+      if (!list || !list.length) return; // 빈 단계는 제목만 남기지 않고 건너뛴다
+      html += '<div class="projgrp">' + esc(stage) + '</div>';
+      list.forEach(function(it){
+        html += row(it.name, it.name, '◇', it.name + ' — ' + it.info.stage + ' · ' + it.info.why + ' (누르면 이 프로젝트 이야기만 보기)', it.info);
       });
     });
     return html + '</div>';
+  }
+  /* ⋯ 메뉴 — 단계 고르기 · 자동으로 되돌리기 (지존만) */
+  var elProjMenu = null;
+  function closeProjMenu(){
+    if (!elProjMenu || elProjMenu.hidden) return;
+    elProjMenu.hidden = true;
+    var open = document.querySelector('.pmore[aria-expanded="true"]');
+    if (open) open.setAttribute('aria-expanded', 'false');
+  }
+  function openProjMenu(btn){
+    var name = btn.getAttribute('data-pmore');
+    if (!name) return;
+    if (!elProjMenu){
+      elProjMenu = document.createElement('div');
+      elProjMenu.className = 'pmenu';
+      elProjMenu.setAttribute('role', 'menu');
+      elProjMenu.hidden = true;
+      document.body.appendChild(elProjMenu);
+      elProjMenu.addEventListener('click', function(e){
+        var b = e.target && e.target.closest ? e.target.closest('[data-stage]') : null;
+        if (!b) return;
+        e.stopPropagation();
+        setProjectStage(elProjMenu.getAttribute('data-name'), b.getAttribute('data-stage'));
+      });
+      document.addEventListener('click', function(e){
+        if (!elProjMenu || elProjMenu.hidden) return;
+        if (elProjMenu.contains(e.target) || (e.target.closest && e.target.closest('.pmore'))) return;
+        closeProjMenu();
+      });
+      document.addEventListener('keydown', function(e){ if (e.key === 'Escape') closeProjMenu(); });
+    }
+    var info = projectStageInfo(name);
+    var html = '<div class="ph">' + esc(name) + ' 단계</div>';
+    STAGE_ORDER.slice().reverse().forEach(function(stage){
+      html += '<button type="button" role="menuitem" data-stage="' + esc(stage) + '"' + (info.stage === stage ? ' class="on"' : '') + '>' + esc(stage) + '</button>';
+    });
+    html += '<div class="psep"></div>' +
+      '<button type="button" role="menuitem" data-stage="auto"' + (info.mode === 'auto' ? ' class="on"' : '') + '>자동으로 되돌리기 (' + esc(info.auto) + ')</button>' +
+      '<div class="pwhy">' + esc(info.why) + '</div>';
+    elProjMenu.innerHTML = html;
+    elProjMenu.setAttribute('data-name', name);
+    var prev = document.querySelector('.pmore[aria-expanded="true"]');
+    if (prev) prev.setAttribute('aria-expanded', 'false');
+    btn.setAttribute('aria-expanded', 'true');
+    elProjMenu.hidden = false;
+    var r = btn.getBoundingClientRect();
+    var w = elProjMenu.offsetWidth, h = elProjMenu.offsetHeight;
+    var left = Math.min(window.innerWidth - w - 8, Math.max(8, r.right - 4));
+    var top = Math.min(window.innerHeight - h - 8, Math.max(8, r.top));
+    elProjMenu.style.left = left + 'px';
+    elProjMenu.style.top = top + 'px';
+  }
+  function setProjectStage(name, stage){
+    if (!name) return;
+    closeProjMenu();
+    api('/api/project-stages', {method: 'POST', body: JSON.stringify({name: name, stage: stage})}).then(function(d){
+      if (!d || !d.ok){ setStatus(false, '단계를 바꾸지 못했습니다'); return; }
+      if (stage === 'auto') delete state.projectStages[name];
+      else state.projectStages[name] = {name: name, stage: stage, set_at: d.set_at, set_by: '지존'};
+      renderRooms();
+      setStatus(true, stage === 'auto' ? ('「' + name + '」 단계를 자동으로 되돌렸습니다') : ('「' + name + '」을(를) ' + stage + '(으)로 옮겼습니다'));
+      loadProjectStages();
+    }).catch(function(){ setStatus(false, '단계를 바꾸지 못했습니다'); });
   }
 
   /* ---------- 회의실 색 (--room) ---------- */
@@ -1669,6 +1817,14 @@
         setProjectFilter(btn.getAttribute('data-project'));
       });
     });
+    Array.prototype.forEach.call(elRoomList.querySelectorAll('[data-pmore]'), function(btn){
+      btn.addEventListener('click', function(e){
+        e.stopPropagation();
+        if (btn.getAttribute('aria-expanded') === 'true'){ closeProjMenu(); return; }
+        openProjMenu(btn);
+      });
+    });
+    closeProjMenu(); // 목록을 다시 그리면 열려 있던 메뉴는 닫는다
     updateTitle();
     renderSectHints();
   }
@@ -2390,7 +2546,8 @@
       state.agendaCounts = d.counts || {approved:0, rejected:0, held:0, deleted:0};
       state.agendaAlarms = d.alarms || 0;
       renderAgendas();
-    }).catch(function(){});
+      if (devOpen()) renderRooms(); // 안건이 바뀌면 프로젝트 단계도 다시 판정
+    }).catch(function(){}).then(function(){ return loadProjectStages(); });
   }
   /* 왼쪽 요약에서 안건을 누르면 그 방·그 글로 이동 */
   function scrollToMsg(id){

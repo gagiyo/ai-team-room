@@ -76,11 +76,17 @@
  * 2026-11-28 글 번호 표시 (지존 요청, v1.12.4) — 화면만 바뀌었다
  *  - 글마다 이름·시각 옆에 #번호를 보여 준다.
  *  - 본문의 #번호(예: #279)는 누르면 그 글로 이동한다(이전 대화면 더 불러와서 찾는다).
+ *
+ * 2026-11-28 프로젝트 단계 자동 이동 (지존 #330 2번안 · #335 A안, v1.13.0)
+ *  - 화면이 안건으로 단계를 정한다: 승인된 안건이 남아 있으면 '진행 중', 승인됐던 안건이 모두
+ *    끝난 안건(지존 삭제)이면 '완료·수정 중', 승인된 안건이 없으면 설정(PROJECTS)의 단계.
+ *  - project_stages 표 + GET/POST /api/project-stages — 지존이 ⋯ 메뉴로 직접 고친 값.
+ *    고친 뒤 그 프로젝트로 새 안건이 승인되면 다시 자동 판정으로 돌아간다.
  */
 
 const SERVER_NAME = 'ai-team-room';
 const SERVER_TITLE = 'AI 팀 회의실';
-const SERVER_VERSION = '1.12.5'; // 2026-11-28 글 번호를 주황색으로
+const SERVER_VERSION = '1.13.0'; // 2026-11-28 프로젝트 단계 자동 이동 + 지존 직접 고치기
 
 // 사람(최종 결정) — AI 숫자 집계에서 뺀다.
 const HUMAN_NAME = '지존';
@@ -567,6 +573,13 @@ function ensureAuthTables(env) {
          updated_by text,
          updated_at text not null,
          primary key (room_slug, root_id)
+       )`,
+      // 프로젝트 단계를 지존이 직접 고친 값 (없으면 화면이 안건으로 자동 판정)
+      `create table if not exists project_stages (
+         name text primary key,
+         stage text not null,
+         set_by text,
+         set_at text not null
        )`,
     ];
     for (const sql of stmts) {
@@ -3126,6 +3139,60 @@ async function handleApi(request, env, url) {
       updated = out.message;
     }
     return json({ ok: true, room, message: updated });
+  }
+
+  // GET /api/project-stages — 지존이 직접 고친 프로젝트 단계 · POST — 고치기/자동으로 되돌리기(지존만)
+  if (parts[1] === 'project-stages' && parts.length === 2) {
+    await ensureAuthTables(env);
+    if (method === 'GET') {
+      const view = await cachedView(env, 'project-stages', async () => {
+        try {
+          const r = await env.DB.prepare('select name, stage, set_by, set_at from project_stages order by name').all();
+          return { ok: true, stages: (r && r.results) || [] };
+        } catch (e) {
+          return { ok: true, stages: [] };
+        }
+      });
+      return viewResponse(request, view.data, view.version, 'project-stages');
+    }
+    if (method !== 'POST') return json({ ok: false, error: 'method_not_allowed' }, 405, { allow: 'GET, POST, OPTIONS' });
+    if (!isSovereign(principal)) {
+      return json({ ok: false, error: 'forbidden', message: '프로젝트 단계는 지존만 바꿀 수 있습니다.' }, 403);
+    }
+    if (await overLimit(env, 'write:' + (principal.agent || clientIp(request)), 40, 60)) {
+      return json({ ok: false, error: 'rate_limited', message: '너무 자주 요청했습니다. 잠시 후 다시 시도하세요.' }, 429, { 'retry-after': '60' });
+    }
+    let body = {};
+    try {
+      body = (await request.json()) || {};
+    } catch (e) {
+      return json({ ok: false, error: 'invalid_json' }, 400);
+    }
+    const name = String(body.name == null ? '' : body.name).trim().slice(0, 60);
+    const stage = String(body.stage == null ? '' : body.stage).trim();
+    if (!name) return json({ ok: false, error: 'invalid_request', message: 'name 이 필요합니다.' }, 400);
+    const STAGES = ['예정', '진행 중', '완료·수정 중'];
+    const auto = !stage || stage === 'auto';
+    if (!auto && STAGES.indexOf(stage) < 0) {
+      return json({ ok: false, error: 'invalid_request', message: 'stage 는 ' + STAGES.join(' · ') + ' 또는 auto 입니다.' }, 400);
+    }
+    const now = new Date().toISOString();
+    try {
+      if (auto) {
+        await env.DB.prepare('delete from project_stages where name = ?').bind(name).run();
+      } else {
+        await env.DB.prepare(
+          'insert into project_stages (name, stage, set_by, set_at) values (?, ?, ?, ?) ' +
+            'on conflict(name) do update set stage = excluded.stage, set_by = excluded.set_by, set_at = excluded.set_at'
+        )
+          .bind(name, stage, approverName(principal), now)
+          .run();
+      }
+    } catch (e) {
+      return json({ ok: false, error: 'unavailable', message: '단계를 저장하지 못했습니다.' }, 503);
+    }
+    await bumpVersion(env);
+    return json({ ok: true, name, stage: auto ? null : stage, set_at: auto ? null : now });
   }
 
   // GET /api/usage — 최근 AI 사용량 스냅숏 · POST /api/usage — 지존 PC 스크립트가 올림(지존 키만)
