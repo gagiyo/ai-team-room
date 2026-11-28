@@ -1,0 +1,85 @@
+<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>프로젝트 단계 자동 이동 시안 (A·B)</title><style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0f1218;color:#e6ebf2;font-family:"Pretendard","Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",sans-serif;padding:18px;line-height:1.5}
+h1{font-size:20px;margin-bottom:4px}.sub{font-size:12.5px;color:#8f9bb0;margin-bottom:16px}
+.rules{background:#161b24;border:1px solid #2a3140;border-radius:12px;padding:12px 14px;margin-bottom:22px;font-size:13px;color:#cfd7e3;max-width:720px}
+.rules b{color:#fff}.rules ol{padding-left:18px;margin-top:4px}.rules li{margin:3px 0}
+section{margin-bottom:26px}h2{font-size:16px;margin-bottom:4px}.d{font-size:12.5px;color:#aab4c4;margin-bottom:10px;max-width:720px}
+.row{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start}
+.side{width:230px;background:#141820;border:1px solid #2a3140;border-radius:12px;padding:10px 8px;position:relative}
+.room{font-size:12.5px;color:#fff;font-weight:700;padding:4px 6px}
+.projects{display:flex;flex-direction:column;gap:1px;margin:1px 0 5px 12px;padding:1px 0 1px 7px;border-left:1px solid #333b4a}
+.grp{font-size:10px;color:#8f9bb0;padding:6px 6px 1px}
+.pr{display:flex;align-items:center;gap:5px;padding:2px 6px;border-radius:7px;font-size:11.5px;color:#b9c4d4;position:relative}
+.pr:hover{background:#1f2530;color:#fff}
+.pr .mk{width:10px;font-size:10px;color:#6f7b90;text-align:center}
+.pr .cnt{margin-left:auto;font-size:10px;color:#8f9bb0}
+.tag{font-size:9.5px;border-radius:5px;padding:0 4px;font-weight:700}
+.tag.auto{color:#7bd88f;background:rgba(123,216,143,.12)}
+.tag.hand{color:#ff9f43;background:rgba(255,159,67,.14)}
+.more{border:0;background:transparent;color:#8f9bb0;font-size:12px;cursor:pointer;padding:0 3px;border-radius:4px}
+.more:hover{background:#333b4a;color:#fff}
+.menu{position:absolute;left:150px;top:18px;z-index:2;background:#1d232e;border:1px solid #3a4354;border-radius:10px;padding:5px;width:170px;box-shadow:0 8px 24px rgba(0,0,0,.45)}
+.menu .h{font-size:10.5px;color:#8f9bb0;padding:3px 7px}
+.menu button{display:block;width:100%;text-align:left;border:0;background:transparent;color:#dfe6f0;font-size:12px;padding:5px 7px;border-radius:6px}
+.menu button:hover,.menu button.on{background:#2b3240}
+.menu button.on::after{content:" ✓";color:#7bd88f}
+.menu .sep{height:1px;background:#2f3746;margin:4px 2px}
+.chips{display:flex;gap:4px;margin:3px 0 4px 21px}
+.chips span{font-size:10.5px;border:1px solid #3a4354;border-radius:10px;padding:0 7px;color:#b9c4d4}
+.chips span.on{background:#ff9f43;border-color:#ff9f43;color:#10131a;font-weight:700}
+.tip{font-size:11.5px;color:#aab4c4;background:#161b24;border:1px solid #2a3140;border-radius:10px;padding:9px 11px;max-width:330px}
+.tip b{color:#fff}.tip p{margin:3px 0}
+</style></head><body>
+<h1>프로젝트 단계 자동 이동 시안</h1>
+<div class="sub">지존 #330 · 2번안(자동 이동 + 지존이 직접 고치기). 아래 규칙은 A·B 공통이고, 다른 점은 직접 고치는 방법뿐입니다.</div>
+
+<div class="rules"><b>자동 규칙</b> (안건 본문에 프로젝트 이름·별칭이 들어 있으면 그 프로젝트 안건으로 봅니다)
+<ol>
+<li><b>예정</b> — 그 프로젝트로 승인된 안건이 아직 없음 (처음 넣을 때 기본값)</li>
+<li><b>진행 중</b> — 승인된 안건이 하나라도 있고, 아직 끝나지 않음</li>
+<li><b>완료·수정 중</b> — 승인됐던 안건이 모두 <b>✔ 끝난 안건</b>(지존 삭제)이 됨</li>
+</ol>
+<b>직접 고치기</b> — 지존만 바꿀 수 있고 서버에 저장되어 모든 화면에 같이 보입니다. 직접 고친 뒤 그 프로젝트로 <b>새 안건이 승인되면</b> 다시 자동으로 돌아갑니다. '자동으로 되돌리기'도 있습니다.</div>
+
+<section><h2>A안 · 줄 끝 ⋯ 메뉴</h2>
+<p class="d">프로젝트 이름 오른쪽에 ⋯ 를 두고, 누르면 단계를 고르는 작은 메뉴가 뜹니다. 이름을 누르면 지금처럼 그 프로젝트 글만 보입니다. 이름 옆 작은 표시로 자동(초록)인지 직접 고친 것(주황)인지 구분합니다.</p>
+<div class="row"><div class="side">
+<div class="room"># 개발</div>
+<div class="projects">
+<div class="pr"><span class="mk">◎</span>전체<span class="cnt">58</span></div>
+<div class="pr"><span class="mk">·</span>미분류<span class="cnt">7</span></div>
+<div class="grp">완료·수정 중</div>
+<div class="pr"><span class="mk">◇</span>무림AI방 <span class="tag auto">자동</span><span class="cnt">31</span><button class="more">⋯</button></div>
+<div class="pr"><span class="mk">◇</span>사이즈핏 <span class="tag auto">자동</span><span class="cnt">9</span><button class="more">⋯</button></div>
+<div class="pr"><span class="mk">◇</span>스크랩박스 <span class="tag hand">직접</span><span class="cnt">4</span><button class="more">⋯</button></div>
+<div class="grp">진행 중</div>
+<div class="pr"><span class="mk">◇</span>브랜드커넥트 <span class="tag auto">자동</span><span class="cnt">6</span><button class="more">⋯</button>
+<div class="menu"><div class="h">브랜드커넥트 단계</div>
+<button>예정</button><button class="on">진행 중</button><button>완료·수정 중</button>
+<div class="sep"></div><button>자동으로 되돌리기</button></div></div>
+<div class="grp">예정</div>
+<div class="pr"><span class="mk">◇</span>호스텔 <span class="tag auto">자동</span><span class="cnt">1</span><button class="more">⋯</button></div>
+</div></div>
+<div class="tip"><b>마우스를 올리면 이유가 보입니다</b><p>브랜드커넥트 — 자동 · 진행 중<br>승인된 안건 2건 중 1건이 아직 진행 중 (안건 12번)</p><p>스크랩박스 — 지존이 직접 고침 · 11/28 15:40<br>새 안건이 승인되면 자동으로 돌아갑니다</p></div>
+</div></section>
+
+<section><h2>B안 · 고른 프로젝트 아래 단계 칩</h2>
+<p class="d">프로젝트를 누르면(지금처럼 그 글만 보기) 그 줄 아래에 단계 칩 세 개가 펼쳐지고, 칩을 누르면 바로 그 단계로 옮겨집니다. 메뉴를 열 필요는 없지만, 목록이 잠깐 한 줄 길어집니다.</p>
+<div class="row"><div class="side">
+<div class="room"># 개발</div>
+<div class="projects">
+<div class="pr"><span class="mk">◎</span>전체<span class="cnt">58</span></div>
+<div class="grp">완료·수정 중</div>
+<div class="pr"><span class="mk">◇</span>무림AI방 <span class="tag auto">자동</span><span class="cnt">31</span></div>
+<div class="pr"><span class="mk">◇</span>사이즈핏 <span class="tag auto">자동</span><span class="cnt">9</span></div>
+<div class="grp">진행 중</div>
+<div class="pr" style="background:#2b3240;color:#fff;font-weight:700"><span class="mk" style="color:#16c08b">◆</span>브랜드커넥트 <span class="tag auto">자동</span><span class="cnt">6</span></div>
+<div class="chips"><span>예정</span><span class="on">진행 중</span><span>완료·수정</span><span>↺ 자동</span></div>
+<div class="grp">예정</div>
+<div class="pr"><span class="mk">◇</span>호스텔 <span class="tag auto">자동</span><span class="cnt">1</span></div>
+</div></div>
+<div class="tip"><b>칩은 지존 화면에만 보입니다.</b><p>다른 참여자 화면에서는 단계와 자동·직접 표시만 보이고 바꿀 수 없습니다.</p></div>
+</div></section>
+</body></html>
