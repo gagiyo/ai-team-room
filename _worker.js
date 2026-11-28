@@ -82,11 +82,15 @@
  *    끝난 안건(지존 삭제)이면 '완료·수정 중', 승인된 안건이 없으면 설정(PROJECTS)의 단계.
  *  - project_stages 표 + GET/POST /api/project-stages — 지존이 ⋯ 메뉴로 직접 고친 값.
  *    고친 뒤 그 프로젝트로 새 안건이 승인되면 다시 자동 판정으로 돌아간다.
+ *
+ * 2026-11-28 어사(ChatGPT) 호출 메일 취소 (지존 #341, v1.14.1)
+ *  - v1.14.0 의 @어사 메일 호출·/api/esa 를 되돌렸다(다른 방식으로 접속 예정).
+ *    그때 D1 에 생긴 빈 esa_calls 표는 쓰지 않으며 남아 있어도 영향 없다.
  */
 
 const SERVER_NAME = 'ai-team-room';
 const SERVER_TITLE = 'AI 팀 회의실';
-const SERVER_VERSION = '1.13.0'; // 2026-11-28 프로젝트 단계 자동 이동 + 지존 직접 고치기
+const SERVER_VERSION = '1.14.1'; // 2026-11-28 어사 호출 메일(v1.14.0) 취소
 
 // 사람(최종 결정) — AI 숫자 집계에서 뺀다.
 const HUMAN_NAME = '지존';
